@@ -1,13 +1,14 @@
 import ray
 
+from vime.platforms import current_platform
+
+if current_platform().is_npu:
+    import vime.backends.megatron_utils  # noqa: F401
+
 from vime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from vime.utils.arguments import parse_args
-from vime.utils.common import is_npu
 from vime.utils.logging_utils import configure_logger, finish_tracking, init_tracking, update_tracking_open_metrics
 from vime.utils.misc import should_run_periodic_action
-
-if is_npu():
-    import mindspeed.megatron_adaptor  # noqa: F401
 
 
 # The framework supports other asynchronous approaches such as fully async (which is shown in examples/full_async).

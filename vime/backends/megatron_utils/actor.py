@@ -8,29 +8,11 @@ import numpy as np
 import ray
 import torch
 import torch.distributed as dist
-
-from vime.utils.common import is_npu
-
-if is_npu():
-    import importlib
-
-    importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
-    from mindspeed.megatron_adaptor import repatch
-
-    _orig_npu_empty_cache = torch.npu.empty_cache
-
-    def _safe_empty_cache():
-        try:
-            _orig_npu_empty_cache()
-        except RuntimeError:
-            pass
-
-    torch.npu.empty_cache = _safe_empty_cache
-    torch.cuda.empty_cache = _safe_empty_cache
 from megatron.core import mpu
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoTokenizer
 
+from vime.platforms import current_platform
 from vime.ray.train_actor import TrainRayActor
 from vime.utils import train_dump_utils
 from vime.utils.data import process_rollout_data
@@ -78,8 +60,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        if is_npu():
-            repatch(args)
+        current_platform().megatron.repatch(args)
         if is_megatron_main_rank():
             init_tracking(args, primary=False, role=role)
 
@@ -99,17 +80,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
 
-        tms_region_ctx = None
-        if args.offload_train and is_npu():
-            tms_region_ctx = torch_memory_saver.region(tag="training", enable_cpu_backup=True)
-            tms_region_ctx.__enter__()
-
-        self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
-            args, role
-        )
-
-        if tms_region_ctx is not None:
-            tms_region_ctx.__exit__(None, None, None)
+        with current_platform().megatron.training_context(args.offload_train):
+            self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
+                args, role
+            )
 
         vpp_size = mpu.get_virtual_pipeline_model_parallel_world_size() or 1
         if vpp_size > 1:
@@ -238,10 +212,11 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         # TODO: this is ugly, move to somewhere else?
         # move tokens to GPU in advance
-        device = torch.npu.current_device() if is_npu() else torch.cuda.current_device()
-        rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=device) for t in rollout_data["tokens"]]
+        rollout_data["tokens"] = [
+            torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
+        ]
         rollout_data["loss_masks"] = [
-            torch.tensor(t, dtype=torch.int, device=device) for t in rollout_data["loss_masks"]
+            torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
         ]
         if "rollout_mask_sums" in rollout_data:
             # Promote precomputed per-rollout mask totals to GPU tensors here
@@ -255,9 +230,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 (
                     {
                         key: (
-                            torch.from_numpy(v.copy()).to(device=device)
+                            torch.from_numpy(v.copy()).to(device=torch.cuda.current_device())
                             if isinstance(v, np.ndarray)
-                            else v.to(device=device)
+                            else v.to(device=torch.cuda.current_device())
                         )
                         for key, v in mm_dict.items()
                     }
@@ -644,7 +619,11 @@ class MegatronTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
 
-        with torch_memory_saver.disable() if (self.args.offload_train and not is_npu()) else nullcontext():
+        with (
+            torch_memory_saver.disable()
+            if (self.args.offload_train and not current_platform().is_npu)
+            else nullcontext()
+        ):
             print_memory("before update_weights")
             self.weight_updater.update_weights()
             print_memory("after update_weights")

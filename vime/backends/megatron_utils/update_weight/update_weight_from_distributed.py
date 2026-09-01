@@ -16,9 +16,8 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerSendWeightsArgs, NCCLWeightTransferEngine
-from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLTrainerSendWeightsArgs, HCCLWeightTransferEngine
 
-from vime.utils.common import is_npu
+from vime.platforms import current_platform
 from vime.utils.distributed_utils import get_gloo_group
 
 from ..megatron_to_hf import convert_to_hf
@@ -364,7 +363,7 @@ def connect_rollout_engines_from_distributed(
     for c in engine_gpu_counts:
         cumulative.append(cumulative[-1] + c)
 
-    backend = "hccl" if is_npu() else "nccl"
+    platform = current_platform()
     refs = [
         engine.init_weights_update_group.remote(
             master_address=master_address,
@@ -372,52 +371,41 @@ def connect_rollout_engines_from_distributed(
             rank_offset=cumulative[i] + 1,
             world_size=world_size,
             group_name=group_name,
-            backend=backend,
+            backend="nccl",
         )
         for i, engine in enumerate(rollout_engines)
     ]
 
-    if is_npu():
-        torch.npu.synchronize()
-        torch.npu.empty_cache()
-        device = torch.npu.current_device()
-        logger.info(
-            "vLLM in-process weight transfer: addr=%s port=%d world_size=%d device=%d CVD=%s",
-            master_address,
-            master_port,
-            world_size,
-            device,
-            os.environ.get("ASCEND_RT_VISIBLE_DEVICES", ""),
-        )
-        # 使用HCCLWeightTransferEngine
-        from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLWeightTransferEngine
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
 
-        model_update_groups = HCCLWeightTransferEngine.trainer_init(
+    device = torch.cuda.current_device()
+    logger.info(
+        "vLLM in-process weight transfer: addr=%s port=%d world_size=%d device=%d CVD=%s",
+        master_address,
+        master_port,
+        world_size,
+        device,
+        os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+    )
+    if platform.is_npu:
+        model_update_groups = platform.weight_transfer.distributed_trainer_init(
             {
                 "master_address": master_address,
                 "master_port": master_port,
                 "world_size": world_size,
             }
         )
-    else:
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-        device = torch.cuda.current_device()
-        logger.info(
-            "vLLM in-process weight transfer: addr=%s port=%d world_size=%d device=%d CVD=%s",
-            master_address,
-            master_port,
-            world_size,
-            device,
-            os.environ.get("CUDA_VISIBLE_DEVICES", ""),
-        )
-        model_update_groups = NCCLWeightTransferEngine.trainer_init(
-            {
-                "master_address": master_address,
-                "master_port": master_port,
-                "world_size": world_size,
-            }
-        )
+        ray.get(refs)
+        return model_update_groups
+
+    model_update_groups = NCCLWeightTransferEngine.trainer_init(
+        {
+            "master_address": master_address,
+            "master_port": master_port,
+            "world_size": world_size,
+        }
+    )
 
     ray.get(refs)
     return model_update_groups
@@ -480,16 +468,19 @@ def update_weights_from_distributed(
         (name, (param.data if hasattr(param, "data") else param).contiguous())
         for name, param in converted_named_tensors
     )
-    if is_npu():
-        HCCLWeightTransferEngine.trainer_send_weights(
+    platform = current_platform()
+    if platform.is_npu:
+        platform.weight_transfer.distributed_trainer_send_weights(
             named_gpu_iter,
-            HCCLTrainerSendWeightsArgs(group=group, packed=packed),
+            group=group,
+            packed=packed,
         )
-    else:
-        NCCLWeightTransferEngine.trainer_send_weights(
-            named_gpu_iter,
-            NCCLTrainerSendWeightsArgs(group=group, packed=packed),
-        )
+        return refs
+
+    NCCLWeightTransferEngine.trainer_send_weights(
+        named_gpu_iter,
+        NCCLTrainerSendWeightsArgs(group=group, packed=packed),
+    )
 
     return refs
 

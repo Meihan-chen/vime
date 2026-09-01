@@ -2,15 +2,11 @@ import logging
 
 import torch
 
-try:
-    import torch_npu  # noqa: F401
-except ImportError:
-    pass
+from vime.platforms import current_platform
 
-from vime.utils.common import is_npu
+# Load NPU prerequisites before the shared Megatron patches.
+current_platform().megatron.bootstrap()
 
-if is_npu():
-    import mindspeed.megatron_adaptor  # noqa: F401
 
 try:
     import deep_ep

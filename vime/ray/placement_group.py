@@ -6,7 +6,7 @@ import ray
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from vime.utils.common import is_npu
+from vime.platforms import current_platform
 
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
@@ -14,30 +14,21 @@ from .rollout import RolloutManager
 logger = logging.getLogger(__name__)
 
 
-# @ray.remote(num_gpus=1)
-@ray.remote
+@ray.remote(num_gpus=1)
 class InfoActor:
     def get_ip_and_gpu_id(self):
-        try:
-            import torch_npu  # noqa: F401
+        platform = current_platform()
+        if platform.is_npu:
+            accelerator_ids = platform.ray.accelerator_ids()
+            if accelerator_ids:
+                return ray.util.get_node_ip_address(), accelerator_ids[0]
 
-            has_npu = True
-        except ImportError:
-            has_npu = False
+            raise RuntimeError(
+                f"No {platform.ray.resource_name} accelerator IDs found. "
+                f"Accelerator IDs: {ray.get_runtime_context().get_accelerator_ids()}"
+            )
 
-        if has_npu or is_npu():
-            npu_ids = ray.get_runtime_context().get_accelerator_ids().get("NPU", [])
-            if npu_ids:
-                return ray.util.get_node_ip_address(), npu_ids[0]
-
-        gpu_ids = ray.get_gpu_ids()
-        if gpu_ids:
-            return ray.util.get_node_ip_address(), gpu_ids[0]
-
-        raise RuntimeError(
-            "No GPU/NPU IDs found. "
-            f"Accelerator IDs: {ray.get_runtime_context().get_accelerator_ids()}, GPU IDs: {gpu_ids}"
-        )
+        return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
 
 
 def sort_key(x):
@@ -63,8 +54,10 @@ def sort_key(x):
 
 def _create_placement_group(num_gpus):
     """Create a placement group with the specified number of GPUs."""
-    device_name = "NPU" if is_npu() else "GPU"
-    bundles = [{device_name: 1, "CPU": 1} for _ in range(num_gpus)]
+    platform = current_platform()
+    bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
+    if platform.is_npu:
+        bundles = [platform.ray.bundle_resources() for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
     num_bundles = len(bundles)
 
@@ -72,13 +65,14 @@ def _create_placement_group(num_gpus):
     # use info actor to get the GPU id
     info_actors = []
     for i in range(num_bundles):
+        resource_options = {"num_gpus": 0, **platform.ray.actor_options(1)} if platform.is_npu else {}
         info_actors.append(
             InfoActor.options(
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=pg,
                     placement_group_bundle_index=i,
                 ),
-                resources={device_name: 1},
+                **resource_options,
             ).remote()
         )
     gpu_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])
@@ -209,11 +203,9 @@ def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
-    device_name = "NPU" if is_npu() else "GPU"
     rollout_manager = RolloutManager.options(
         num_cpus=1,
-        # num_gpus=0,
-        resources={device_name: 0},
+        num_gpus=0,
     ).remote(args, pg)
 
     # calculate num_rollout from num_epoch

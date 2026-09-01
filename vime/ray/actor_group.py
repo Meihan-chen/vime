@@ -4,8 +4,8 @@ import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from vime.platforms import current_platform
 from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from vime.utils.common import get_cann_python_site_packages, is_npu, prepend_pythonpath
 
 
 class RayTrainGroup:
@@ -60,19 +60,13 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
+        platform = current_platform()
         if self.args.offload_train and self.args.train_backend == "megatron":
-            import torch_memory_saver
-
-            if is_npu():
-                env_vars["TMS_HOOK_MODE"] = "torch"
-                env_vars["TMS_REGION_TAG"] = "training"
-                env_vars["TMS_ENABLE_CPU_BACKUP"] = "1"
-                if self.args.colocate:
-                    env_vars["PYTORCH_NPU_ALLOC_CONF"] = "expandable_segments:False"
-                cann_python_path = get_cann_python_site_packages()
-                if cann_python_path is not None:
-                    prepend_pythonpath(env_vars, cann_python_path)
+            if platform.is_npu:
+                env_vars = platform.ray.train_runtime_env(self.args, env_vars)
             else:
+                import torch_memory_saver
+
                 for path in [
                     "torch_memory_saver_hook_mode_preload_cu12.abi3.so",
                     "torch_memory_saver_hook_mode_preload.abi3.so",
@@ -100,20 +94,22 @@ class RayTrainGroup:
 
         actor_impl = MegatronTrainRayActor
 
-        TrainRayActor = ray.remote(runtime_env={"env_vars": env_vars})(actor_impl)
-        device_name = "NPU" if is_npu() else "GPU"
+        TrainRayActor = ray.remote(num_gpus=1, runtime_env={"env_vars": env_vars})(actor_impl)
 
         # Create worker actors
         self._actor_handlers = []
         master_addr, master_port = None, None
         for rank in range(world_size):
+            resource_options = {"num_gpus": num_gpus_per_actor}
+            if platform.is_npu:
+                resource_options = {"num_gpus": 0, **platform.ray.actor_options(num_gpus_per_actor)}
             actor = TrainRayActor.options(
                 num_cpus=num_gpus_per_actor,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=pg,
                     placement_group_bundle_index=reordered_bundle_indices[rank],
                 ),
-                resources={device_name: num_gpus_per_actor},
+                **resource_options,
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())

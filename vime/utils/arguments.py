@@ -10,7 +10,7 @@ from vllm_router.launch_router import RouterArgs
 
 from vime.backends.vllm_utils.arguments import validate_args as vllm_validate_args
 from vime.backends.vllm_utils.arguments import vllm_parse_args
-from vime.utils.common import is_npu
+from vime.platforms import current_platform
 from vime.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from vime.utils.logging_utils import configure_logger
 
@@ -99,7 +99,7 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
 
-            reset_arg(parser, "--distributed-backend", type=str, default="hccl")
+            reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
 
             return parser
@@ -132,14 +132,10 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 default=1024**3,
                 help="Add margin for train memory allocation. By default we will reserve 1GB as margin.",
             )
-            try:
-                default_megatron_to_hf_mode = "bridge" if is_npu() else "raw"
-            except RuntimeError:
-                default_megatron_to_hf_mode = "raw"
             parser.add_argument(
                 "--megatron-to-hf-mode",
                 choices=["raw", "bridge"],
-                default=default_megatron_to_hf_mode,
+                default=current_platform().checkpoint.default_megatron_to_hf_mode,
                 help="The method to convert megatron weights to hugging face weights for vLLM.",
             )
             parser.add_argument(

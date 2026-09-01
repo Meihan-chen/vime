@@ -14,6 +14,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from vime.backends.vllm_utils.vllm_config import ModelConfig, ServerGroupConfig, VllmConfig
 from vime.backends.vllm_utils.vllm_engine import VLLMEngine
+from vime.platforms import current_platform
 
 # Memory-type tag strings shared with the vLLM engine's sleep/wake_up API.
 GPU_MEMORY_TYPE_KV_CACHE = "kv_cache"
@@ -21,7 +22,6 @@ GPU_MEMORY_TYPE_WEIGHTS = "weights"
 GPU_MEMORY_TYPE_CUDA_GRAPH = "cuda_graph"
 from vime.rollout.base_types import call_rollout_fn
 from vime.utils import logging_utils
-from vime.utils.common import get_cann_python_site_packages, is_npu, prepend_pythonpath
 from vime.utils.dp_schedule import build_dp_schedule
 from vime.utils.health_monitor import RolloutHealthMonitor
 from vime.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
@@ -106,7 +106,7 @@ class ServerGroup:
         RolloutRayActor = ray.remote(VLLMEngine)
 
         rollout_engines = []
-        device_name = "NPU" if is_npu() else "GPU"
+        platform = current_platform()
         for i in range(len(self.all_engines)):
             if self.all_engines[i] is not None:
                 continue
@@ -126,20 +126,18 @@ class ServerGroup:
             )
 
             env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST}
-            if is_npu():
-                cann_python_path = get_cann_python_site_packages()
-                if cann_python_path is not None:
-                    prepend_pythonpath(env_vars, cann_python_path)
-                if self.args.colocate:
-                    env_vars["PYTORCH_NPU_ALLOC_CONF"] = "expandable_segments:False"
-                env_vars["VLLM_USE_AOT_COMPILE"] = "0"
+            if platform.is_npu:
+                env_vars = platform.ray.rollout_runtime_env(self.args, env_vars)
+            resource_options = {"num_gpus": num_gpus}
+            if platform.is_npu:
+                resource_options = {"num_gpus": 0, **platform.ray.actor_options(num_gpus)}
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,
                 scheduling_strategy=scheduling_strategy,
                 runtime_env={
                     "env_vars": env_vars,
                 },
-                resources={device_name: num_gpus},
+                **resource_options,
             ).remote(
                 self.args,
                 rank=global_rank,
@@ -390,8 +388,7 @@ class RolloutManager:
             self.servers = start_rollout_servers(args, pg)
 
         init_tracking(args, primary=False)
-        device_name = "NPU" if is_npu() else "GPU"
-        self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0, resources={device_name: 0}).remote()
+        self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
         self._health_monitors = []

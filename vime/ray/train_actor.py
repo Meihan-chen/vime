@@ -9,8 +9,8 @@ import torch
 import torch.distributed as dist
 
 import vime.utils.eval_config
+from vime.platforms import current_platform
 from vime.ray.ray_actor import RayActor
-from vime.utils.common import is_npu
 from vime.utils.distributed_utils import init_gloo_group
 from vime.utils.logging_utils import configure_logger
 from vime.utils.memory_utils import clear_memory, print_memory
@@ -19,17 +19,15 @@ logger = logging.getLogger(__name__)
 
 
 def get_local_gpu_id():
-    if is_npu():
-        env_var = "ASCEND_RT_VISIBLE_DEVICES"
-        device_ids = ray.get_runtime_context().get_accelerator_ids()["NPU"]
-    else:
-        env_var = "CUDA_VISIBLE_DEVICES"
-        device_ids = ray.get_gpu_ids()
-    cvd = os.environ.get(env_var, None)
+    platform = current_platform()
+    if platform.is_npu:
+        return platform.ray.local_device_id()
+
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", None)
     if cvd is None:
-        return device_ids[0]
+        return ray.get_gpu_ids()[0]
     else:
-        return cvd.split(",").index(str(device_ids[0]))
+        return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
 
 
 class TrainRayActor(RayActor):
@@ -63,10 +61,7 @@ class TrainRayActor(RayActor):
         torch.serialization.add_safe_globals([vime.utils.eval_config.EvalDatasetConfig])
 
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        if is_npu():
-            torch.npu.set_device(f"npu:{local_rank}")
-        else:
-            torch.cuda.set_device(f"cuda:{local_rank}")
+        torch.cuda.set_device(f"cuda:{local_rank}")
 
         backend = args.distributed_backend
 

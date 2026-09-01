@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import os
 import sys
 import types
 from dataclasses import dataclass, field
@@ -15,12 +16,8 @@ import torch
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_distributed"
 
 
-# Modules stubbed by _install_stubs(). These are installed ONLY for the duration of this
-# module's tests (inside the fixture) and restored on teardown. Installing them at import
-# time (top level) left a fake ``vllm`` (with no ``.engine``) in sys.modules, which broke
-# COLLECTION of sibling test modules (e.g. test_vllm_engine.py -> ModuleNotFoundError
-# 'vllm.engine'). pytest imports all test modules in one process before running fixtures,
-# so the stub leak must be confined to test runtime, not collection.
+# Modules stubbed by _install_stubs(). These are installed only for this module's
+# tests and restored on teardown so they cannot affect sibling test collection.
 _STUBBED_MODULES = (
     "megatron",
     "megatron.core",
@@ -30,16 +27,14 @@ _STUBBED_MODULES = (
     "ray",
     "ray.actor",
     "vime.utils.distributed_utils",
-    "vllm",
-    "vllm.distributed",
-    "vllm.distributed.weight_transfer",
-    "vllm.distributed.weight_transfer.nccl_engine",
 )
 
 
 @pytest.fixture(scope="module")
 def upw():
     saved = {k: sys.modules.get(k) for k in (*_STUBBED_MODULES, MODULE_PATH)}
+    saved_platform = os.environ.get("VIME_PLATFORM")
+    os.environ["VIME_PLATFORM"] = "cuda"
     # Pop first so _install_stubs()'s setdefault() actually installs the stubs (hermetic),
     # then drop the module-under-test so it re-imports against the stubs.
     for k in _STUBBED_MODULES:
@@ -49,6 +44,10 @@ def upw():
     try:
         yield importlib.import_module(MODULE_PATH)
     finally:
+        if saved_platform is None:
+            os.environ.pop("VIME_PLATFORM", None)
+        else:
+            os.environ["VIME_PLATFORM"] = saved_platform
         for k, original in saved.items():
             if original is None:
                 sys.modules.pop(k, None)
@@ -99,38 +98,6 @@ def _install_stubs():
     vime_utils.get_gloo_group = MagicMock(return_value="gloo")
     sys.modules.setdefault("vime.utils.distributed_utils", vime_utils)
 
-    nccl_mod = types.ModuleType("vllm.distributed.weight_transfer.nccl_engine")
-
-    class DummyNCCLTrainerSendWeightsArgs:
-        def __init__(self, *, group, packed):
-            self.group = group
-            self.packed = packed
-
-    class DummyNCCLWeightTransferEngine:
-        @staticmethod
-        def trainer_send_weights(*args, **kwargs):
-            return None
-
-        @staticmethod
-        def trainer_init(*args, **kwargs):
-            return object()
-
-    nccl_mod.NCCLTrainerSendWeightsArgs = DummyNCCLTrainerSendWeightsArgs
-    nccl_mod.NCCLWeightTransferEngine = DummyNCCLWeightTransferEngine
-    vllm_mod = types.ModuleType("vllm")
-    vllm_mod.__path__ = []
-    distributed_mod = types.ModuleType("vllm.distributed")
-    distributed_mod.__path__ = []
-    weight_transfer_mod = types.ModuleType("vllm.distributed.weight_transfer")
-    weight_transfer_mod.__path__ = []
-    vllm_mod.distributed = distributed_mod
-    distributed_mod.weight_transfer = weight_transfer_mod
-    weight_transfer_mod.nccl_engine = nccl_mod
-    sys.modules.setdefault("vllm", vllm_mod)
-    sys.modules.setdefault("vllm.distributed", distributed_mod)
-    sys.modules.setdefault("vllm.distributed.weight_transfer", weight_transfer_mod)
-    sys.modules.setdefault("vllm.distributed.weight_transfer.nccl_engine", nccl_mod)
-
 
 @dataclass
 class _RemoteCall:
@@ -176,46 +143,34 @@ def _real_tensors(n: int = 2):
     return [(f"layer.{i}.weight", torch.zeros(2, 2)) for i in range(n)]
 
 
-def _make_dummy_nccl_engine(*, send_seen: list[dict] | None = None, init_seen: list[dict] | None = None):
-    """Build dummy NCCL types; patch on *upw* module (top-level import, not sys.modules)."""
-
-    class DummyNCCLTrainerSendWeightsArgs:
-        def __init__(self, *, group, packed):
-            self.group = group
-            self.packed = packed
-
-    class DummyNCCLWeightTransferEngine:
-        @staticmethod
-        def trainer_send_weights(iterator, trainer_args):
-            if send_seen is not None:
-                send_seen.append(
-                    {
-                        "items": list(iterator),
-                        "group": trainer_args.group,
-                        "packed": trainer_args.packed,
-                    }
-                )
-
-        @staticmethod
-        def trainer_init(cfg):
-            if init_seen is not None:
-                init_seen.append(cfg)
-            return DummyGroup("group-from-trainer-init")
-
-    return DummyNCCLWeightTransferEngine, DummyNCCLTrainerSendWeightsArgs
-
-
-def _patch_nccl_on_module(
-    monkeypatch, upw, *, send_seen: list[dict] | None = None, init_seen: list[dict] | None = None
+def _patch_platform(
+    monkeypatch,
+    upw,
+    *,
+    send_seen: list[dict] | None = None,
+    init_seen: list[dict] | None = None,
 ):
-    dummy_engine, dummy_args = _make_dummy_nccl_engine(send_seen=send_seen, init_seen=init_seen)
-    monkeypatch.setattr(upw, "NCCLWeightTransferEngine", dummy_engine)
-    monkeypatch.setattr(upw, "NCCLTrainerSendWeightsArgs", dummy_args)
+    def trainer_send_weights(iterator, *, group, packed):
+        items = list(iterator)
+        if send_seen is not None:
+            send_seen.append({"items": items, "group": group, "packed": packed})
+
+    def trainer_init(config):
+        if init_seen is not None:
+            init_seen.append(config)
+        return DummyGroup("group-from-trainer-init")
+
+    weight_transfer = types.SimpleNamespace(
+        distributed_trainer_send_weights=MagicMock(side_effect=trainer_send_weights),
+        distributed_trainer_init=MagicMock(side_effect=trainer_init),
+    )
+    platform = types.SimpleNamespace(is_npu=True, weight_transfer=weight_transfer)
+    monkeypatch.setattr(upw, "current_platform", lambda: platform)
+    return platform
 
 
 def _patch_trainer_send(monkeypatch, upw, seen: list[dict]) -> None:
-    _patch_nccl_on_module(monkeypatch, upw, send_seen=seen)
-    monkeypatch.setattr(upw.torch.cuda, "synchronize", lambda: None)
+    _patch_platform(monkeypatch, upw, send_seen=seen)
 
 
 def _make_instance(upw):
@@ -259,7 +214,7 @@ def test_signature_rejects_legacy_use_vllm_call(upw):
 
 
 @pytest.mark.unit
-def test_packed_true_uses_vllm_trainer_send_weights(upw, monkeypatch):
+def test_packed_true_uses_npu_trainer_send_weights(upw, monkeypatch):
     group = DummyGroup()
     engine = RecordingEngine()
     tensors = _real_tensors()
@@ -277,7 +232,7 @@ def test_packed_true_uses_vllm_trainer_send_weights(upw, monkeypatch):
 
 
 @pytest.mark.unit
-def test_packed_false_still_uses_vllm_trainer_send_weights(upw, monkeypatch):
+def test_packed_false_still_uses_npu_trainer_send_weights(upw, monkeypatch):
     group = DummyGroup()
     engine = RecordingEngine()
     tensors = _real_tensors()
@@ -520,17 +475,27 @@ def test_source_no_materialized_named_gpu_list(upw):
 
 
 @pytest.mark.unit
-def test_connect_rollout_engines_always_uses_vllm_trainer_init(upw, monkeypatch):
+def test_connect_rollout_engines_uses_platform_collective_provider(upw, monkeypatch):
     args = type("Args", (), {"rollout_num_gpus_per_engine": 1})()
     engines = [RecordingEngine(), RecordingEngine()]
     seen: list[dict] = []
 
-    _patch_nccl_on_module(monkeypatch, upw, init_seen=seen)
-    monkeypatch.setattr(upw.torch.cuda, "synchronize", lambda: None)
-    monkeypatch.setattr(upw.torch.cuda, "empty_cache", lambda: None)
-    monkeypatch.setattr(upw.torch.cuda, "current_device", lambda: 0)
+    platform = _patch_platform(
+        monkeypatch,
+        upw,
+        init_seen=seen,
+    )
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
     monkeypatch.setattr(upw.ray, "get", lambda refs: refs)
     monkeypatch.setattr(upw.ray._private.services, "get_node_ip_address", lambda: "127.0.0.1")
+    cuda_synchronize = MagicMock()
+    cuda_empty_cache = MagicMock()
+    cuda_current_device = MagicMock(return_value=3)
+    monkeypatch.setattr(upw.torch.cuda, "synchronize", cuda_synchronize)
+    monkeypatch.setattr(upw.torch.cuda, "empty_cache", cuda_empty_cache)
+    monkeypatch.setattr(upw.torch.cuda, "current_device", cuda_current_device)
+    log_calls = []
+    monkeypatch.setattr(upw.logger, "info", lambda *args: log_calls.append(args))
 
     group = upw.connect_rollout_engines_from_distributed(args, "g", engines, engine_gpu_counts=[1, 2])
 
@@ -540,6 +505,13 @@ def test_connect_rollout_engines_always_uses_vllm_trainer_init(upw, monkeypatch)
     assert seen[0]["world_size"] == 4  # 1 + (1 + 2)
     assert len(engines[0].init_weights_update_group.calls) == 1
     assert len(engines[1].init_weights_update_group.calls) == 1
+    assert engines[0].init_weights_update_group.calls[0].kwargs["backend"] == "nccl"
+    assert engines[1].init_weights_update_group.calls[0].kwargs["backend"] == "nccl"
+    cuda_synchronize.assert_called_once_with()
+    cuda_empty_cache.assert_called_once_with()
+    cuda_current_device.assert_called_once_with()
+    platform.weight_transfer.distributed_trainer_init.assert_called_once_with(seen[0])
+    assert log_calls[-1][-1] == "3"
 
 
 @pytest.mark.unit
@@ -578,15 +550,62 @@ def test_source_wraps_sync_with_weight_update_session(upw):
 
 
 @pytest.mark.unit
-def test_source_uses_nccl_trainer_send_weights_args(upw):
+def test_source_keeps_main_nccl_sender_and_adds_npu_override(upw):
     src = inspect.getsource(upw.update_weights_from_distributed)
+    connect_src = inspect.getsource(upw.connect_rollout_engines_from_distributed)
+    assert "platform.weight_transfer.distributed_trainer_send_weights" in src
+    assert "NCCLWeightTransferEngine.trainer_send_weights" in src
     assert "NCCLTrainerSendWeightsArgs" in src
+    assert "platform.weight_transfer.distributed_trainer_init" in connect_src
+    assert "NCCLWeightTransferEngine.trainer_init" in connect_src
     assert "weight_transfer_compat" not in src
 
 
 @pytest.mark.unit
-def test_cuda_sync_once_after_all_buckets_not_per_bucket(upw):
+def test_cuda_path_keeps_main_nccl_sender(upw, monkeypatch):
+    group = DummyGroup()
+    engine = RecordingEngine()
+    tensors = _real_tensors()
+    seen = []
+
+    monkeypatch.setattr(upw, "current_platform", lambda: types.SimpleNamespace(is_npu=False))
+    monkeypatch.setattr(
+        upw,
+        "NCCLTrainerSendWeightsArgs",
+        lambda *, group, packed: types.SimpleNamespace(group=group, packed=packed),
+    )
+    monkeypatch.setattr(
+        upw.NCCLWeightTransferEngine,
+        "trainer_send_weights",
+        lambda iterator, args: seen.append((list(iterator), args)),
+    )
+
+    refs = upw.update_weights_from_distributed("g", group, 3, [engine], tensors, packed=True)
+
+    assert refs == ["ref"]
+    assert [name for name, _ in seen[0][0]] == [name for name, _ in tensors]
+    assert seen[0][1].group is group
+    assert seen[0][1].packed is True
+
+
+@pytest.mark.unit
+def test_cuda_sync_once_after_all_buckets_not_per_bucket(upw, monkeypatch):
     send_src = inspect.getsource(upw.update_weights_from_distributed)
-    sync_src = inspect.getsource(upw.UpdateWeightFromDistributed.update_weights)
-    assert "torch.cuda.synchronize" not in send_src
-    assert "torch.cuda.synchronize" in sync_src
+    assert ".synchronize()" not in send_src
+
+    obj = _make_instance(upw)
+    events = []
+    obj._send_weights = lambda _pbar: events.extend(["bucket-1", "bucket-2"])
+    cuda_synchronize = MagicMock(side_effect=lambda: events.append("synchronize"))
+    monkeypatch.setattr(upw.torch.cuda, "synchronize", cuda_synchronize)
+
+    monkeypatch.setattr(upw.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: None)
+    monkeypatch.setattr(upw, "_begin_vllm_weight_update_session", lambda _engines: events.append("begin"))
+    monkeypatch.setattr(upw, "_end_vllm_weight_update_session", lambda _engines: events.append("finish"))
+    monkeypatch.setattr(upw, "tqdm", lambda **_kwargs: MagicMock())
+
+    upw.UpdateWeightFromDistributed.update_weights(obj)
+
+    assert events == ["begin", "bucket-1", "bucket-2", "synchronize", "finish"]
+    cuda_synchronize.assert_called_once_with()

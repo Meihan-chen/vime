@@ -14,7 +14,6 @@ from mbridge import AutoBridge
 from vime.backends.megatron_utils.arguments import set_default_megatron_args
 from vime.backends.megatron_utils.initialize import init
 from vime.backends.megatron_utils.model_provider import get_model_provider_func
-from vime.utils.common import is_npu
 from vime.utils.logging_utils import configure_logger
 from vime.utils.memory_utils import print_memory
 
@@ -92,11 +91,8 @@ def main():
     os.environ.setdefault("LOCAL_RANK", str(local_rank))
     os.environ.setdefault("MASTER_ADDR", "localhost")
     os.environ.setdefault("MASTER_PORT", "12355")
-    backend = "nccl"
-    if is_npu():
-        backend = "hccl"
     dist.init_process_group(
-        backend=backend,
+        backend="nccl",
         world_size=world_size,
         rank=global_rank,
         device_id=torch.device(f"cuda:{local_rank}"),
