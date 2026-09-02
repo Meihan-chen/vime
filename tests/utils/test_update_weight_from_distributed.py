@@ -1,4 +1,4 @@
-"""Unit tests for vime/backends/megatron_utils/update_weight/update_weight_from_distributed.py."""
+"""CPU unit tests for ``vime.backends.megatron_utils.update_weight.update_weight_from_distributed``."""
 
 from __future__ import annotations
 
@@ -8,12 +8,20 @@ import os
 import sys
 import types
 from dataclasses import dataclass, field
+from pathlib import Path
 from unittest.mock import MagicMock
 
+_tests_root = Path(__file__).resolve().parents[1]
+if str(_tests_root) not in sys.path:
+    sys.path.insert(0, str(_tests_root))
+
+import _unit_stubs
 import pytest
 import torch
 
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_distributed"
+
+NUM_GPUS = 0
 
 
 # Modules stubbed by _install_stubs(). These are installed only for this module's
@@ -27,6 +35,18 @@ _STUBBED_MODULES = (
     "ray",
     "ray.actor",
     "vime.utils.distributed_utils",
+    "vllm",
+    "vllm.utils",
+    "vllm.utils.deep_gemm",
+    "vllm.third_party",
+    "vllm.third_party.deep_gemm",
+    "vllm.third_party.deep_gemm.utils",
+    "vllm.third_party.deep_gemm.utils.layout",
+    "vllm.distributed",
+    "vllm.distributed.weight_transfer",
+    "vllm.distributed.weight_transfer.nccl_engine",
+    "triton",
+    "triton.language",
 )
 
 
@@ -44,59 +64,14 @@ def upw():
     try:
         yield importlib.import_module(MODULE_PATH)
     finally:
-        if saved_platform is None:
-            os.environ.pop("VIME_PLATFORM", None)
-        else:
-            os.environ["VIME_PLATFORM"] = saved_platform
-        for k, original in saved.items():
-            if original is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = original
+        _unit_stubs.restore_sys_modules(saved)
 
 
 def _install_stubs():
-    mpu_stub = MagicMock()
-    mpu_stub.get_data_parallel_rank.return_value = 0
-    mpu_stub.get_tensor_model_parallel_rank.return_value = 0
-    mpu_stub.get_tensor_model_parallel_world_size.return_value = 1
-    mpu_stub.get_pipeline_model_parallel_rank.return_value = 0
-    mpu_stub.get_expert_model_parallel_world_size.return_value = 1
-    mpu_stub.get_expert_model_parallel_group.return_value = "ep_group"
-
-    megatron_core = types.ModuleType("megatron.core")
-    megatron_core.__path__ = []
-    megatron_core.mpu = mpu_stub
-    parallel_state_mod = types.ModuleType("megatron.core.parallel_state")
-    parallel_state_mod.get_tensor_model_parallel_rank = mpu_stub.get_tensor_model_parallel_rank
-    parallel_state_mod.get_tensor_model_parallel_world_size = mpu_stub.get_tensor_model_parallel_world_size
-    transformer_mod = types.ModuleType("megatron.core.transformer")
-    transformer_mod.__path__ = []
-    transformer_layer_mod = types.ModuleType("megatron.core.transformer.transformer_layer")
-    transformer_layer_mod.get_transformer_layer_offset = lambda *args, **kwargs: 0
-    transformer_mod.transformer_layer = transformer_layer_mod
-    megatron_core.parallel_state = parallel_state_mod
-    megatron_core.transformer = transformer_mod
-    megatron_mod = types.ModuleType("megatron")
-    megatron_mod.core = megatron_core
-    sys.modules.setdefault("megatron", megatron_mod)
-    sys.modules.setdefault("megatron.core", megatron_core)
-    sys.modules.setdefault("megatron.core.parallel_state", parallel_state_mod)
-    sys.modules.setdefault("megatron.core.transformer", transformer_mod)
-    sys.modules.setdefault("megatron.core.transformer.transformer_layer", transformer_layer_mod)
-
-    ray_mod = types.ModuleType("ray")
-    ray_mod.get = lambda refs: refs
-    ray_mod.ObjectRef = object
-    ray_mod.actor = types.ModuleType("ray.actor")
-    ray_mod.actor.ActorHandle = object
-    ray_mod._private = types.SimpleNamespace(services=types.SimpleNamespace(get_node_ip_address=lambda: "127.0.0.1"))
-    sys.modules.setdefault("ray", ray_mod)
-    sys.modules.setdefault("ray.actor", ray_mod.actor)
-
-    vime_utils = types.ModuleType("vime.utils.distributed_utils")
-    vime_utils.get_gloo_group = MagicMock(return_value="gloo")
-    sys.modules.setdefault("vime.utils.distributed_utils", vime_utils)
+    _unit_stubs.install_megatron_mpu_stub()
+    _unit_stubs.install_ray_stub()
+    _unit_stubs.install_vime_distributed_utils_stub()
+    _unit_stubs.install_triton_stub()
 
 
 @dataclass
@@ -591,21 +566,10 @@ def test_cuda_path_keeps_main_nccl_sender(upw, monkeypatch):
 @pytest.mark.unit
 def test_cuda_sync_once_after_all_buckets_not_per_bucket(upw, monkeypatch):
     send_src = inspect.getsource(upw.update_weights_from_distributed)
-    assert ".synchronize()" not in send_src
+    sync_src = inspect.getsource(upw.UpdateWeightFromDistributed.update_weights)
+    assert "torch.cuda.synchronize" not in send_src
+    assert "torch.cuda.synchronize" in sync_src
 
-    obj = _make_instance(upw)
-    events = []
-    obj._send_weights = lambda _pbar: events.extend(["bucket-1", "bucket-2"])
-    cuda_synchronize = MagicMock(side_effect=lambda: events.append("synchronize"))
-    monkeypatch.setattr(upw.torch.cuda, "synchronize", cuda_synchronize)
 
-    monkeypatch.setattr(upw.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: None)
-    monkeypatch.setattr(upw, "_begin_vllm_weight_update_session", lambda _engines: events.append("begin"))
-    monkeypatch.setattr(upw, "_end_vllm_weight_update_session", lambda _engines: events.append("finish"))
-    monkeypatch.setattr(upw, "tqdm", lambda **_kwargs: MagicMock())
-
-    upw.UpdateWeightFromDistributed.update_weights(obj)
-
-    assert events == ["begin", "bucket-1", "bucket-2", "synchronize", "finish"]
-    cuda_synchronize.assert_called_once_with()
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

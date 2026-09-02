@@ -1,4 +1,4 @@
-"""Unit tests for ``vime.backends.vllm_utils.vllm_engine``."""
+"""CPU unit tests for ``vime.backends.vllm_utils.vllm_engine``."""
 
 from __future__ import annotations
 
@@ -6,12 +6,53 @@ import base64
 import dataclasses
 import json
 import pickle
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
+_tests_root = Path(__file__).resolve().parents[1]
+if str(_tests_root) not in sys.path:
+    sys.path.insert(0, str(_tests_root))
+
+import _unit_stubs
 import pytest
 import requests
 import torch
 
+_unit_stubs.install_vllm_cli_stubs()
+
 from vime.backends.vllm_utils import vllm_engine as mod
+
+NUM_GPUS = 0
+
+
+@pytest.fixture
+def vllm_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        rollout_external=True,
+        hf_checkpoint="/tmp/model",
+        vllm_router_ip=None,
+        vllm_router_port=None,
+        num_gpus_per_node=8,
+        rollout_num_gpus_per_engine=4,
+        colocate=False,
+        debug_rollout_only=False,
+        actor_num_gpus_per_node=4,
+        actor_num_nodes=1,
+        use_critic=False,
+        critic_num_gpus_per_node=0,
+        critic_num_nodes=0,
+    )
+
+
+@pytest.fixture
+def vllm_engine(vllm_args):
+    from vime.backends.vllm_utils.vllm_engine import VLLMEngine
+
+    engine = VLLMEngine(vllm_args, rank=0)
+    engine.server_host = "127.0.0.1"
+    engine.server_port = 8765
+    return engine
 
 
 @pytest.fixture(autouse=True)
@@ -243,7 +284,7 @@ def test_finish_weight_update_posts_empty_body(vllm_engine, monkeypatch):
 
 
 @pytest.mark.unit
-def test_update_weights_posts_native_ipc_payload_and_records_version(vllm_engine, monkeypatch):
+def test_update_weights_from_tensor_posts_native_ipc_payload_and_records_version(vllm_engine, monkeypatch):
     posted: list[tuple[str, dict]] = []
 
     def fake_post(endpoint: str, payload: dict):
@@ -253,35 +294,31 @@ def test_update_weights_posts_native_ipc_payload_and_records_version(vllm_engine
     monkeypatch.setattr(vllm_engine, "_make_request", fake_post)
     assert vllm_engine._weight_version is None
 
-    ipc_handles = [{"uuid-gpu0": ("rebuild_fn", (1, 2, 3))}]
-    vllm_engine.update_weights(
-        {
-            "update_info": {
-                "names": ["layer.0.weight"],
-                "dtype_names": ["float32"],
-                "shapes": [[2, 2]],
-                "ipc_handles": ipc_handles,
-                "packed": False,
-            }
-        },
+    ipc_handles = [{"uuid-gpu0": (1, 2, 3)}]
+    vllm_engine.update_weights_from_tensor(
+        names=["layer.0.weight"],
+        dtype_names=["float32"],
+        shapes=[[2, 2]],
+        ipc_handles=ipc_handles,
         weight_version="42",
     )
 
     assert posted[0][0] == "update_weights"
     sent = posted[0][1]["update_info"]
     # ipc_handles are pickled for native vLLM/vLLM-Ascend parse_update_info.
+    # ipc_handles got cloudpickle'd into ipc_handles_pickled
     assert "ipc_handles" not in sent
     assert isinstance(sent["ipc_handles_pickled"], str)
     assert pickle.loads(base64.b64decode(sent["ipc_handles_pickled"])) == ipc_handles
     assert sent["names"] == ["layer.0.weight"]
     assert sent["shapes"] == [[2, 2]]
-    assert sent["packed"] is False
+    assert "packed" not in sent
     # version recorded after POST success
     assert vllm_engine._weight_version == "42"
 
 
 @pytest.mark.unit
-def test_update_weights_does_not_advance_version_on_failure(vllm_engine, monkeypatch):
+def test_update_weights_from_tensor_does_not_advance_version_on_failure(vllm_engine, monkeypatch):
     """POST failure must not advance _weight_version (else a retry would skip the resync)."""
 
     def fake_post_fail(endpoint: str, payload: dict) -> dict:
@@ -291,8 +328,11 @@ def test_update_weights_does_not_advance_version_on_failure(vllm_engine, monkeyp
 
     vllm_engine._weight_version = "old"
     with pytest.raises(RuntimeError, match="simulated POST failure"):
-        vllm_engine.update_weights(
-            {"update_info": {"names": [], "dtype_names": [], "shapes": [], "ipc_handles": []}},
+        vllm_engine.update_weights_from_tensor(
+            names=[],
+            dtype_names=[],
+            shapes=[],
+            ipc_handles=[],
             weight_version="new",
         )
     assert vllm_engine._weight_version == "old"
@@ -682,3 +722,7 @@ def test_control_plane_methods_noop_on_headless_worker(vllm_engine, monkeypatch)
     assert vllm_engine.update_weights_from_distributed(["w"], [torch.float32], [[1]], "g") is None
     assert vllm_engine.release_memory_occupation() is None
     assert vllm_engine.resume_memory_occupation() is None
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

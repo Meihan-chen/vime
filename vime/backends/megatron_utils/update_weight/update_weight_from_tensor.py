@@ -1,11 +1,12 @@
 """
-Colocated vLLM weight sync (trainer + worker)
-=============================================
+Colocated vLLM weight sync (trainer side)
+=========================================
 
-Trainer: ``UpdateWeightFromTensor`` — Megatron → HF chunks → CUDA IPC (Ray).
+``UpdateWeightFromTensor`` — Megatron → HF chunks → CUDA IPC handles
+→ ``POST /update_weights`` to vLLM's native ``IPCWeightTransferEngine``.
 
-Worker: ``vLLMColocateWorkerExtension`` — passed to ``vllm serve`` via
-``--worker-extension-cls``; selected by the platform provider.
+vLLM handles UUID routing + device_index remapping + layerwise reload
+internally; no worker extension or monkey-patch is needed.
 
 https://docs.vllm.ai/en/stable/examples/rl/rlhf_ipc/
 """
@@ -370,10 +371,8 @@ def _send_to_colocated_engine(
     local_info, weight_refs = _build_ipc_update_info_from_named_tensors(hf_named_tensors)
     payload = _serialize_ipc_update_info(local_info)
 
-    # all_gather_object is monkey-patched for ReloadableProcessGroup; gather_object
-    # is not (it fails after a Megatron reload).
-    gathered_payloads = [None] * slot_size
-    dist.all_gather_object(gathered_payloads, payload, group=ipc_gather_group)
+    gathered_payloads = [None] * slot_size if dist.get_rank() == ipc_gather_src else None
+    dist.gather_object(payload, object_gather_list=gathered_payloads, dst=ipc_gather_src, group=ipc_gather_group)
 
     refs = []
     if dist.get_rank() == ipc_gather_src:
@@ -384,7 +383,3 @@ def _send_to_colocated_engine(
         refs.append(ipc_engine.update_weights_from_tensor.remote(**merged, weight_version=str(weight_version)))
 
     return refs, weight_refs
-
-
-# Compatibility aliases for the old ``--worker-extension-cls`` paths.
-from .npu_worker_extension import vLLMColocateWorkerExtension, vLLMWorkerExtension  # noqa: E402,F401

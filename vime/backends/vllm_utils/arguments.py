@@ -309,13 +309,15 @@ def vllm_parse_args():
     parser = FlexibleArgumentParser(add_help=False)
     add_vllm_arguments(parser)
 
-    # Compute default vllm_tensor_parallel_size from CLI args
+    # Compute default vllm_tensor_parallel_size from CLI args.
     temp_parser = argparse.ArgumentParser(add_help=False)
     temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
     temp_parser.add_argument("--vllm-pipeline-parallel-size", type=int, default=1)
+    temp_parser.add_argument("--vllm-data-parallel-size", type=int, default=1)
     temp_args, _ = temp_parser.parse_known_args()
     pp_size = temp_args.vllm_pipeline_parallel_size
-    vllm_tp_size = temp_args.rollout_num_gpus_per_engine // pp_size
+    dp_size = temp_args.vllm_data_parallel_size
+    vllm_tp_size = temp_args.rollout_num_gpus_per_engine // (pp_size * dp_size)
     parser.set_defaults(vllm_tensor_parallel_size=vllm_tp_size)
 
     args, _ = parser.parse_known_args()

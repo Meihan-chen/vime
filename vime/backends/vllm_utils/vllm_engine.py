@@ -14,12 +14,12 @@ import ipaddress
 import logging
 import multiprocessing
 import os
-import pickle
 import time
 from argparse import BooleanOptionalAction
 from typing import Any
 from urllib.parse import quote
 
+import cloudpickle
 import requests
 
 from vime.backends.vllm_utils.arguments import SKIPPED_DESTS, get_vllm_cli_action_table
@@ -710,34 +710,19 @@ class VLLMEngine(RayActor):
         weight_version: str | None = None,
         flush_cache: bool = False,
     ) -> dict | None:
-        """POST a native IPC payload to ``/update_weights``.
+        """POST IPC update payload to vLLM's native ``/update_weights`` endpoint.
 
-        ``ipc_handles`` contains receiver rebuild arguments only. The native
-        CUDA or Ascend receiver selects its own rebuild function.
+        Uses vLLM's built-in ``IPCWeightTransferEngine.receive_weights`` which
+        handles GPU UUID routing and device_index remapping internally.
         """
         if self.node_rank != 0:
             return None
 
         payload: dict = {"names": names, "dtype_names": dtype_names, "shapes": shapes}
         if ipc_handles is not None:
-            payload["ipc_handles_pickled"] = base64.b64encode(pickle.dumps(ipc_handles)).decode("utf-8")
+            payload["ipc_handles_pickled"] = base64.b64encode(cloudpickle.dumps(ipc_handles)).decode("utf-8")
         if flush_cache:
             self.flush_cache()
-
-        response = self._post_vllm_update_weights_http(payload)
-        if weight_version is not None:
-            self._weight_version = str(weight_version)
-        return response
-
-    def update_weights(self, request: dict, weight_version: str | None = None) -> dict | None:
-        """Deprecated compatibility bridge for native transfer-engine payloads."""
-        if self.node_rank != 0:
-            return None
-
-        update_info = request["update_info"] if "update_info" in request else request
-        payload = dict(update_info)
-        if "ipc_handles" in payload:
-            payload["ipc_handles_pickled"] = base64.b64encode(pickle.dumps(payload.pop("ipc_handles"))).decode("utf-8")
 
         response = self._post_vllm_update_weights_http(payload)
         if weight_version is not None:

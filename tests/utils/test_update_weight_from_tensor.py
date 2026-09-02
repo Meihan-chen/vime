@@ -1,4 +1,4 @@
-"""Unit tests for colocated vLLM IPC weight sync."""
+"""CPU unit tests for colocated vLLM IPC weight sync (UpdateWeightFromTensor)."""
 
 from __future__ import annotations
 
@@ -12,21 +12,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+_tests_root = Path(__file__).resolve().parents[1]
+if str(_tests_root) not in sys.path:
+    sys.path.insert(0, str(_tests_root))
+
+import _unit_stubs
 import pytest
 import torch
 
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_tensor"
 
-_PURGE_PREFIXES = ("megatron", "mindspeed", "vime.backends.megatron_utils")
-
-
-def _collect_subtree(prefix: str) -> list[str]:
-    """Collect all modules in sys.modules that start with the given prefix."""
-    return [k for k in sys.modules.keys() if k == prefix or k.startswith(prefix + ".")]
+NUM_GPUS = 0
 
 
 def _install_stubs():
-    repo_root = Path(__file__).resolve().parents[5]
+    repo_root = _tests_root.parent
     megatron_utils_pkg = types.ModuleType("vime.backends.megatron_utils")
     megatron_utils_pkg.__path__ = [str(repo_root / "vime/backends/megatron_utils")]
     update_weight_pkg = types.ModuleType("vime.backends.megatron_utils.update_weight")
@@ -34,30 +34,9 @@ def _install_stubs():
     sys.modules["vime.backends.megatron_utils"] = megatron_utils_pkg
     sys.modules["vime.backends.megatron_utils.update_weight"] = update_weight_pkg
 
-    mpu_stub = MagicMock()
-    mpu_stub.get_data_parallel_rank.return_value = 0
-    mpu_stub.get_tensor_model_parallel_rank.return_value = 0
-    mpu_stub.get_tensor_model_parallel_world_size.return_value = 2
-    mpu_stub.get_tensor_model_parallel_group.return_value = "tp_group"
-    mpu_stub.get_pipeline_model_parallel_rank.return_value = 0
-
-    megatron_core = types.ModuleType("megatron.core")
-    megatron_core.__path__ = []
-    megatron_core.mpu = mpu_stub
-    megatron_mod = types.ModuleType("megatron")
-    megatron_mod.__path__ = []
-    megatron_mod.core = megatron_core
-
-    sys.modules.setdefault("megatron", megatron_mod)
-    sys.modules.setdefault("megatron.core", megatron_core)
-
-    ray_mod = types.ModuleType("ray")
-    ray_mod.get = lambda refs: refs
-    ray_mod.ObjectRef = object
-    ray_mod.actor = types.ModuleType("ray.actor")
-    ray_mod.actor.ActorHandle = object
-    sys.modules.setdefault("ray", ray_mod)
-    sys.modules.setdefault("ray.actor", ray_mod.actor)
+    _unit_stubs.install_megatron_mpu_stub()
+    _unit_stubs.install_ray_stub()
+    _unit_stubs.install_vime_distributed_utils_stub()
 
     import torch.distributed as _dist
 
@@ -74,10 +53,6 @@ def _install_stubs():
     _dist.new_group = dist_stub.new_group
     _dist.barrier = dist_stub.barrier
     _dist.all_gather_object = dist_stub.all_gather_object
-
-    vime_utils = types.ModuleType("vime.utils.distributed_utils")
-    vime_utils.get_gloo_group = MagicMock(return_value="gloo")
-    sys.modules.setdefault("vime.utils.distributed_utils", vime_utils)
 
     hf_iter_stub = MagicMock()
     hf_iter_stub.get_hf_weight_chunks.return_value = iter([])
@@ -129,16 +104,10 @@ _DIST_ATTRS = (
 def upw_vllm():
     import torch.distributed as _dist
 
-    purge_keys = set()
-    for prefix in _PURGE_PREFIXES:
-        purge_keys.update(_collect_subtree(prefix))
-    for k in _STUBBED_MODULES:
-        purge_keys.add(k)
-    purge_keys.add(MODULE_PATH)
-
-    saved_mods = {k: sys.modules.get(k) for k in purge_keys}
+    saved_mods = _unit_stubs.save_sys_modules((*_STUBBED_MODULES, MODULE_PATH))
     saved_dist = {a: getattr(_dist, a, None) for a in _DIST_ATTRS}
-    for k in purge_keys:
+    # Pop first so _install_stubs()'s setdefault() actually installs stubs (hermetic).
+    for k in _STUBBED_MODULES:
         sys.modules.pop(k, None)
     _install_stubs()
     sys.modules.pop(MODULE_PATH, None)
@@ -146,11 +115,7 @@ def upw_vllm():
     try:
         yield importlib.import_module(MODULE_PATH)
     finally:
-        for k, original in saved_mods.items():
-            if original is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = original
+        _unit_stubs.restore_sys_modules(saved_mods)
         for a, original in saved_dist.items():
             if original is not None:
                 setattr(_dist, a, original)
@@ -384,7 +349,8 @@ def test_send_to_single_rank_slot_uses_native_update_endpoint(upw_vllm):
     refs = [tensors[0][1]]
 
     with patch("torch.distributed.get_world_size", return_value=1), patch(
-        f"{MODULE_PATH}._build_ipc_update_info_from_named_tensors", return_value=(local_info, refs)
+        f"{MODULE_PATH}._build_ipc_update_info_from_named_tensors",
+        return_value=(local_info, refs),
     ):
         remote_refs, long_lived = upw_vllm._send_to_colocated_engine(
             tensors,
@@ -445,8 +411,6 @@ def test_npu_worker_patch_skips_moe_transpose_during_wake_up(upw_vllm):
     assert wake_quant_configs[0] is not None
     assert not worker.moe_transposed
     assert worker.vllm_config.quant_config is None
-    assert upw_vllm.vLLMColocateWorkerExtension is hooks.vLLMColocateWorkerExtension
-    assert upw_vllm.vLLMWorkerExtension is hooks.vLLMWorkerExtension
 
 
 @pytest.mark.unit
@@ -528,7 +492,7 @@ def test_send_hf_params_combines_colocated_and_distributed_refs(upw_vllm):
 
 
 @pytest.mark.unit
-def test_send_to_colocated_engine_all_gathers_per_slot_and_leader_sends(upw_vllm):
+def test_send_to_colocated_engine_gathers_per_slot_and_leader_sends(upw_vllm):
     engine = RecordingVLLMEngine()
     tensors = [("layer.weight", torch.zeros(2, 2))]
     local_info = {
@@ -544,13 +508,14 @@ def test_send_to_colocated_engine_all_gathers_per_slot_and_leader_sends(upw_vllm
         "ipc_handles": [{"device-1": (4, 5, 6)}],
     }
 
-    def gather_into_slot(output, payload, *, group):
+    def gather_into_slot(payload, object_gather_list=None, dst=None, group=None):
         assert group == "slot-0"
-        output[:] = [payload, upw_vllm._serialize_ipc_update_info(peer_info)]
+        assert dst == 0
+        object_gather_list[:] = [payload, upw_vllm._serialize_ipc_update_info(peer_info)]
 
     with patch("torch.distributed.get_world_size", return_value=2), patch(
         "torch.distributed.get_rank", return_value=0
-    ), patch("torch.distributed.all_gather_object", side_effect=gather_into_slot), patch(
+    ), patch("torch.distributed.gather_object", side_effect=gather_into_slot), patch(
         f"{MODULE_PATH}._build_ipc_update_info_from_named_tensors",
         return_value=(local_info, [tensors[0][1]]),
     ):
@@ -581,20 +546,15 @@ def test_non_leader_gathers_but_does_not_send_rpc(upw_vllm):
         "shapes": [[2, 2]],
         "ipc_handles": [{"device-1": (4, 5, 6)}],
     }
-    leader_info = {
-        "names": ["layer.weight"],
-        "dtype_names": ["float32"],
-        "shapes": [[2, 2]],
-        "ipc_handles": [{"device-0": (1, 2, 3)}],
-    }
-
-    def gather_into_slot(output, payload, *, group):
+    def gather_into_slot(payload, object_gather_list=None, dst=None, group=None):
+        del payload
         assert group == "slot-0"
-        output[:] = [upw_vllm._serialize_ipc_update_info(leader_info), payload]
+        assert dst == 0
+        assert object_gather_list is None
 
     with patch("torch.distributed.get_world_size", return_value=2), patch(
         "torch.distributed.get_rank", return_value=1
-    ), patch("torch.distributed.all_gather_object", side_effect=gather_into_slot) as gather, patch(
+    ), patch("torch.distributed.gather_object", side_effect=gather_into_slot) as gather, patch(
         f"{MODULE_PATH}._build_ipc_update_info_from_named_tensors",
         return_value=(local_info, [tensors[0][1]]),
     ):
@@ -616,7 +576,7 @@ def test_non_leader_gathers_but_does_not_send_rpc(upw_vllm):
 @pytest.mark.unit
 def test_placeholder_rank_skips_ipc_export_and_collective(upw_vllm):
     with patch(f"{MODULE_PATH}._build_ipc_update_info_from_named_tensors") as build, patch(
-        "torch.distributed.all_gather_object"
+        "torch.distributed.gather_object"
     ) as gather:
         refs, long_lived = upw_vllm._send_to_colocated_engine(
             _chunks(1)[0],
@@ -673,7 +633,37 @@ def test_connect_maps_heterogeneous_slots_with_placeholder_gap(upw_vllm):
 
 
 @pytest.mark.unit
-def test_connect_keeps_colocated_engines_and_initializes_once(upw_vllm):
+def test_non_leader_skips_start_finish_and_merged_rpc(upw_vllm):
+    obj = _make_instance(upw_vllm)
+    engine = RecordingVLLMEngine()
+    # slot leader is rank 0; we drive update_weights as rank 1 (non-leader).
+    obj.rollout_engines = [engine]
+    obj._ipc_engine = engine
+    obj._ipc_gather_src = 0
+    obj._ipc_gather_group = "slot-0"
+
+    dummy_info = {"names": [], "dtype_names": [], "shapes": [], "ipc_handles": []}
+    with patch(
+        f"{MODULE_PATH}._build_ipc_update_info_from_named_tensors",
+        return_value=(dummy_info, []),
+    ), patch(
+        f"{MODULE_PATH}._serialize_ipc_update_info", return_value="payload"
+    ), patch("torch.distributed.gather_object") as gather_obj, patch(
+        "torch.distributed.get_world_size", return_value=2
+    ):
+        _run_update(obj, chunks=_chunks(1), rank=1)
+
+    gather_obj.assert_called_once()
+    # non-leader: no start/finish, and no merged update_weights_from_tensor RPC
+    assert len(engine.start_weight_update.calls) == 0
+    assert len(engine.finish_weight_update.calls) == 0
+    assert len(engine.update_weights_from_tensor.calls) == 0
+
+
+@pytest.mark.unit
+def test_ipc_init_runs_once_in_connect(upw_vllm):
+    """init_weight_transfer_engine fires once in connect_rollout_engines (rank 0),
+    not in update_weights. A second connect call does not re-init."""
     engines = [RecordingVLLMEngine() for _ in range(2)]
     obj = _make_instance(
         upw_vllm,
@@ -709,3 +699,7 @@ def test_connect_keeps_colocated_engines_and_initializes_once(upw_vllm):
 
     assert len(engines2[0].init_weight_transfer_engine.calls) == 0
     assert len(engines2[1].init_weight_transfer_engine.calls) == 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

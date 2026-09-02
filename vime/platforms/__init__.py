@@ -1,8 +1,7 @@
 """Accelerator platform discovery and narrow capability providers.
 
-``VIME_PLATFORM`` is the production override.  ``VIME_TEST_DEVICE`` remains a
-compatibility alias for the existing launch/test harness.  When neither is set,
-NPU detection is lazy and failure-safe; CUDA is the explicit default.
+``VIME_PLATFORM`` is the explicit override.  When it is not set, NPU detection
+is lazy and failure-safe; CUDA is the default.
 """
 
 from __future__ import annotations
@@ -39,10 +38,9 @@ def get_platform(name: str) -> Platform:
 
 
 @cache
-def _resolve_platform(override: str | None, test_override: str | None) -> Platform:
-    selected = override or test_override
-    if selected:
-        return get_platform(selected)
+def _resolve_platform(override: str | None) -> Platform:
+    if override:
+        return get_platform(override)
 
     try:
         if detect_npu():
@@ -56,9 +54,7 @@ def current_platform() -> Platform:
     """Resolve the active platform without probing hardware at module import."""
     raw_override = os.environ.get("VIME_PLATFORM")
     override = raw_override.strip().lower() if raw_override and raw_override.strip() else None
-    raw_test_override = os.environ.get("VIME_TEST_DEVICE") if override is None else None
-    test_override = raw_test_override.strip().lower() if raw_test_override and raw_test_override.strip() else None
-    return _resolve_platform(override, test_override)
+    return _resolve_platform(override)
 
 
 def reset_platform_cache() -> None:

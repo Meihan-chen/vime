@@ -16,9 +16,8 @@ def _reset_platform_selection():
     reset_platform_cache()
 
 
-def test_vime_platform_override_has_priority(monkeypatch):
+def test_vime_platform_override_selects_cuda(monkeypatch):
     monkeypatch.setenv("VIME_PLATFORM", "cuda")
-    monkeypatch.setenv("VIME_TEST_DEVICE", "npu")
 
     platform = current_platform()
 
@@ -28,9 +27,8 @@ def test_vime_platform_override_has_priority(monkeypatch):
     assert platform.checkpoint.default_megatron_to_hf_mode == "raw"
 
 
-def test_legacy_test_override_selects_npu_without_vendor_import(monkeypatch):
-    monkeypatch.delenv("VIME_PLATFORM", raising=False)
-    monkeypatch.setenv("VIME_TEST_DEVICE", "npu")
+def test_vime_platform_override_selects_npu_without_vendor_import(monkeypatch):
+    monkeypatch.setenv("VIME_PLATFORM", "npu")
     before = {name for name in ("torch_npu", "vllm_ascend", "mindspeed") if name in sys.modules}
 
     platform = current_platform()
