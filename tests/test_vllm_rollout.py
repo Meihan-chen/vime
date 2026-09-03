@@ -500,6 +500,98 @@ def test_generate_and_rm_custom_generate_path(patch_generate_state, monkeypatch)
 
 
 @pytest.mark.unit
+def test_generate_and_rm_rejects_batched_rm_length_mismatch_without_partial_assignment(
+    patch_generate_state, monkeypatch
+):
+    from vime.rollout import rm_hub
+
+    generated_samples: list[Sample] = []
+
+    async def fake_generate(args, sample, sampling_params):
+        sample.response = "a"
+        sample.response_length = 1
+        sample.tokens = [1]
+        sample.reward = None
+        sample.status = Sample.Status.COMPLETED
+
+        sibling = Sample(index=1, prompt="p1", status=Sample.Status.COMPLETED)
+        sibling.response = "b"
+        sibling.response_length = 1
+        sibling.tokens = [2]
+        sibling.reward = None
+        generated_samples[:] = [sample, sibling]
+        return generated_samples
+
+    async def short_batched_rm(args, samples, **kwargs):
+        assert len(samples) == 2
+        return [0.25]
+
+    monkeypatch.setattr(mod, "generate", fake_generate)
+    monkeypatch.setattr(rm_hub, "load_function", lambda _path: short_batched_rm)
+
+    with pytest.raises(ValueError, match="returned 1 rewards for 2 samples"):
+        asyncio.run(
+            mod.generate_and_rm(
+                _rollout_args(custom_rm_path="fake.rm"),
+                Sample(index=0, prompt="p0"),
+                _default_sampling_params(),
+            )
+        )
+
+    assert [sample.reward for sample in generated_samples] == [None, None]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "invalid_rewards,type_name",
+    [
+        ({"first": 0.25, "second": 0.75}, "dict"),
+        ("ab", "str"),
+        (b"ab", "bytes"),
+    ],
+)
+def test_generate_and_rm_rejects_deceptive_batched_rm_result_types_without_partial_assignment(
+    patch_generate_state, monkeypatch, invalid_rewards, type_name
+):
+    from vime.rollout import rm_hub
+
+    generated_samples: list[Sample] = []
+
+    async def fake_generate(args, sample, sampling_params):
+        sample.response = "a"
+        sample.response_length = 1
+        sample.tokens = [1]
+        sample.reward = None
+        sample.status = Sample.Status.COMPLETED
+
+        sibling = Sample(index=1, prompt="p1", status=Sample.Status.COMPLETED)
+        sibling.response = "b"
+        sibling.response_length = 1
+        sibling.tokens = [2]
+        sibling.reward = None
+        generated_samples[:] = [sample, sibling]
+        return generated_samples
+
+    async def invalid_batched_rm(args, samples, **kwargs):
+        assert len(samples) == 2
+        return invalid_rewards
+
+    monkeypatch.setattr(mod, "generate", fake_generate)
+    monkeypatch.setattr(rm_hub, "load_function", lambda _path: invalid_batched_rm)
+
+    with pytest.raises(TypeError, match=f"returned {type_name} instead of an iterable of rewards"):
+        asyncio.run(
+            mod.generate_and_rm(
+                _rollout_args(custom_rm_path="fake.rm"),
+                Sample(index=0, prompt="p0"),
+                _default_sampling_params(),
+            )
+        )
+
+    assert [sample.reward for sample in generated_samples] == [None, None]
+
+
+@pytest.mark.unit
 def test_generate_and_rm_group_assigns_session_ids(patch_generate_state, monkeypatch):
     async def fake_generate_and_rm(args, sample, sampling_params, evaluation=False):
         sample.response = "ok"
@@ -512,6 +604,40 @@ def test_generate_and_rm_group_assigns_session_ids(patch_generate_state, monkeyp
     result = asyncio.run(mod.generate_and_rm_group(_rollout_args(), group, _default_sampling_params()))
     assert all(s.session_id for s in result)
     assert result[0].session_id != result[1].session_id
+
+
+@pytest.mark.unit
+def test_generate_and_rm_group_rejects_batched_rm_length_mismatch_without_partial_assignment(
+    patch_generate_state, monkeypatch
+):
+    from vime.rollout import rm_hub
+
+    async def fake_generate(args, sample, sampling_params):
+        sample.response = "ok"
+        sample.response_length = 1
+        sample.tokens = [sample.index or 0]
+        sample.reward = None
+        sample.status = Sample.Status.COMPLETED
+        return sample
+
+    async def long_batched_rm(args, samples, **kwargs):
+        assert len(samples) == 2
+        return [0.25, 0.75, 1.0]
+
+    monkeypatch.setattr(mod, "generate", fake_generate)
+    monkeypatch.setattr(rm_hub, "load_function", lambda _path: long_batched_rm)
+
+    group = [Sample(index=0, prompt="p0"), Sample(index=1, prompt="p1")]
+    with pytest.raises(ValueError, match="returned 3 rewards for 2 samples"):
+        asyncio.run(
+            mod.generate_and_rm_group(
+                _rollout_args(group_rm=True, custom_rm_path="fake.rm"),
+                group,
+                _default_sampling_params(),
+            )
+        )
+
+    assert [sample.reward for sample in group] == [None, None]
 
 
 @pytest.mark.unit
@@ -540,6 +666,88 @@ def test_eval_rollout_passk_requests_do_not_share_session_ids(patch_generate_sta
     assert None not in seen_session_ids
     assert len(set(seen_session_ids)) == 2
     assert result[dataset_cfg.name]["samples"][0].session_id != result[dataset_cfg.name]["samples"][1].session_id
+
+
+@pytest.mark.unit
+def test_abort_deletes_inflight_without_pause_resume(patch_generate_state, monkeypatch):
+    from vime.backends.vllm_utils import server_control
+
+    state = _PatchedGenerateState(_rollout_args())
+    monkeypatch.setattr(mod, "GenerateState", lambda args: state)
+
+    aborted = asyncio.Event()
+    posted_paths: list[str] = []
+
+    async def fake_get(url):
+        return {"workers": [{"url": "http://w0:9000"}]}
+
+    async def fake_post(url, payload, max_retries=60, headers=None):
+        posted_paths.append(url)
+        if url.endswith("/abort_requests"):
+            aborted.set()
+        return {}
+
+    monkeypatch.setattr(mod, "get", fake_get)
+    # abort() drives the delete-type sweep through the server_control helper.
+    monkeypatch.setattr(server_control, "post", fake_post)
+
+    sample = Sample(index=0, prompt="p")
+
+    async def pending_group():
+        # Delete-type abort makes the in-flight /generate return on its own.
+        await aborted.wait()
+        sample.status = Sample.Status.ABORTED
+        return [sample]
+
+    async def run_abort():
+        state.pendings = {asyncio.create_task(pending_group())}
+        return await asyncio.wait_for(mod.abort(_rollout_args(), rollout_id=0), timeout=5.0)
+
+    aborted_samples = asyncio.run(run_abort())
+
+    # Only /abort_requests is posted -- never /pause or /resume.
+    assert posted_paths and all(u.endswith("/abort_requests") for u in posted_paths)
+    assert state.pendings == set()
+    # partial_rollout is off by default, so drained groups are discarded, not returned.
+    assert aborted_samples == []
+
+
+@pytest.mark.unit
+def test_abort_collects_partial_samples_when_partial_rollout(patch_generate_state, monkeypatch):
+    from vime.backends.vllm_utils import server_control
+
+    args = _rollout_args(partial_rollout=True)
+    state = _PatchedGenerateState(args)
+    monkeypatch.setattr(mod, "GenerateState", lambda a: state)
+
+    aborted = asyncio.Event()
+
+    async def fake_get(url):
+        return {"workers": [{"url": "http://w0:9000"}]}
+
+    async def fake_post(url, payload, max_retries=60, headers=None):
+        if url.endswith("/abort_requests"):
+            aborted.set()
+        return {}
+
+    monkeypatch.setattr(mod, "get", fake_get)
+    monkeypatch.setattr(server_control, "post", fake_post)
+
+    sample = Sample(index=0, prompt="p")
+    sample.response = "partial"
+
+    async def pending_group():
+        await aborted.wait()
+        return [sample]
+
+    async def run_abort():
+        state.pendings = {asyncio.create_task(pending_group())}
+        return await asyncio.wait_for(mod.abort(args, rollout_id=7), timeout=5.0)
+
+    aborted_samples = asyncio.run(run_abort())
+
+    assert aborted_samples == [[sample]]
+    assert sample.metadata["start_rollout_id"] == 7
 
 
 if __name__ == "__main__":

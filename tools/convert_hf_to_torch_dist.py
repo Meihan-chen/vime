@@ -22,11 +22,18 @@ def add_convertion_args(parser):
     """Add conversion arguments to the parser"""
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
     parser.add_argument(
+        "--custom-model-provider-path",
+        type=str,
+        default=None,
+        help="Path to a custom model provider function.",
+    )
+    parser.add_argument(
         "--megatron-to-hf-mode",
         choices=["raw", "bridge"],
         default="raw",
         help="The method to convert megatron weights to hugging face weights for vLLM.",
     )
+    parser.add_argument("--allgather-cp", action="store_true", default=False)
     try:
         parser.add_argument("--padded-vocab-size", type=int, default=None)
     except Exception:
@@ -78,6 +85,14 @@ def get_args():
 
 
 def main():
+    if torch.version.hip:
+        import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
+
+        from vime.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
+
+        filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
+        print("[ROCm] Applied FileSystemWriterAsync patch for HIP compatibility")
+
     configure_logger()
 
     # Initialize distributed environment

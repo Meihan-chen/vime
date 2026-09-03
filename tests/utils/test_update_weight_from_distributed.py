@@ -65,6 +65,10 @@ def upw():
         yield importlib.import_module(MODULE_PATH)
     finally:
         _unit_stubs.restore_sys_modules(saved)
+        if saved_platform is None:
+            os.environ.pop("VIME_PLATFORM", None)
+        else:
+            os.environ["VIME_PLATFORM"] = saved_platform
 
 
 def _install_stubs():
@@ -72,6 +76,38 @@ def _install_stubs():
     _unit_stubs.install_ray_stub()
     _unit_stubs.install_vime_distributed_utils_stub()
     _unit_stubs.install_triton_stub()
+
+    nccl_mod = types.ModuleType("vllm.distributed.weight_transfer.nccl_engine")
+
+    class DummyNCCLTrainerSendWeightsArgs:
+        def __init__(self, *, group, packed):
+            self.group = group
+            self.packed = packed
+
+    class DummyNCCLWeightTransferEngine:
+        @staticmethod
+        def trainer_send_weights(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def trainer_init(*args, **kwargs):
+            return object()
+
+    nccl_mod.NCCLTrainerSendWeightsArgs = DummyNCCLTrainerSendWeightsArgs
+    nccl_mod.NCCLWeightTransferEngine = DummyNCCLWeightTransferEngine
+    vllm_mod = types.ModuleType("vllm")
+    vllm_mod.__path__ = []
+    distributed_mod = types.ModuleType("vllm.distributed")
+    distributed_mod.__path__ = []
+    weight_transfer_mod = types.ModuleType("vllm.distributed.weight_transfer")
+    weight_transfer_mod.__path__ = []
+    vllm_mod.distributed = distributed_mod
+    distributed_mod.weight_transfer = weight_transfer_mod
+    weight_transfer_mod.nccl_engine = nccl_mod
+    sys.modules.setdefault("vllm", vllm_mod)
+    sys.modules.setdefault("vllm.distributed", distributed_mod)
+    sys.modules.setdefault("vllm.distributed.weight_transfer", weight_transfer_mod)
+    sys.modules.setdefault("vllm.distributed.weight_transfer.nccl_engine", nccl_mod)
 
 
 @dataclass
@@ -490,6 +526,169 @@ def test_connect_rollout_engines_uses_platform_collective_provider(upw, monkeypa
 
 
 @pytest.mark.unit
+def test_connect_rollout_engines_defers_vllm_group_init_for_multi_pp(upw, monkeypatch):
+    obj = _make_instance(upw)
+    obj._model_update_groups = None
+    engines = [RecordingEngine()]
+    connect_calls: list[str] = []
+
+    monkeypatch.setattr(upw.mpu, "get_data_parallel_rank", lambda **kwargs: 0)
+    monkeypatch.setattr(upw.mpu, "get_tensor_model_parallel_rank", lambda: 0)
+    monkeypatch.setattr(upw.mpu, "get_pipeline_model_parallel_rank", lambda: 1)
+    monkeypatch.setattr(upw.mpu, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(
+        upw,
+        "connect_rollout_engines_from_distributed",
+        lambda *args, **kwargs: connect_calls.append(args[1]) or DummyGroup("unexpected"),
+    )
+
+    upw.UpdateWeightFromDistributed.connect_rollout_engines(
+        obj,
+        engines,
+        RecordingLock(),
+        engine_gpu_counts=[1],
+    )
+
+    assert obj._is_pp_src_rank is True
+    assert obj._pp_world_size == 2
+    assert obj._group_name == "vime-pp_1"
+    assert obj._model_update_groups is None
+    assert connect_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("pp_rank", "is_src", "expected_connect_calls"), [(0, True, ["vime-pp_0"]), (1, False, [])])
+def test_bridge_multi_pp_connects_only_pp0(upw, monkeypatch, pp_rank, is_src, expected_connect_calls):
+    obj = _make_instance(upw)
+    obj._model_update_groups = None
+    obj._hf_weight_iterator = MagicMock()
+    actual_connect_calls: list[str] = []
+
+    monkeypatch.setattr(upw.mpu, "get_data_parallel_rank", lambda **kwargs: 0)
+    monkeypatch.setattr(upw.mpu, "get_tensor_model_parallel_rank", lambda: 0)
+    monkeypatch.setattr(upw.mpu, "get_pipeline_model_parallel_rank", lambda: pp_rank)
+    monkeypatch.setattr(upw.mpu, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(
+        upw,
+        "connect_rollout_engines_from_distributed",
+        lambda *args, **kwargs: actual_connect_calls.append(args[1]) or DummyGroup(args[1]),
+    )
+
+    upw.UpdateWeightFromDistributed.connect_rollout_engines(
+        obj,
+        [RecordingEngine()],
+        RecordingLock(),
+        engine_gpu_counts=[1],
+    )
+
+    assert obj._is_pp_src_rank is is_src
+    assert actual_connect_calls == expected_connect_calls
+
+
+@pytest.mark.unit
+def test_multi_pp_weight_sync_connects_only_active_pp_stage(upw, monkeypatch):
+    obj = _make_instance(upw)
+    obj._model_update_groups = None
+    obj._pp_world_size = 2
+    obj._group_name = "vime-pp_0"
+    obj._engine_gpu_counts = [1]
+    obj.rollout_engines = [RecordingEngine()]
+    send_calls: list[tuple[int, bool, str, bool, object]] = []
+    connect_calls: list[str] = []
+    barriers: list[object] = []
+
+    monkeypatch.setattr(upw.mpu, "get_pipeline_model_parallel_rank", lambda: 0)
+    monkeypatch.setattr(upw.mpu, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(upw, "get_gloo_group", lambda: "gloo")
+    monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: barriers.append(kwargs.get("group")))
+    monkeypatch.setattr(upw.torch.cuda, "synchronize", lambda: None)
+
+    def fake_connect(args, group_name, rollout_engines, engine_gpu_counts=None):
+        connect_calls.append(group_name)
+        return DummyGroup(group_name)
+
+    def fake_send(self, pbar):
+        send_calls.append(
+            (
+                self._active_weight_sync_pp_rank,
+                self._is_active_weight_sync_pp_stage(),
+                self._group_name,
+                pbar is not None,
+                self._model_update_groups,
+            )
+        )
+
+    monkeypatch.setattr(upw, "connect_rollout_engines_from_distributed", fake_connect)
+    monkeypatch.setattr(upw.UpdateWeightFromDistributed, "_send_weights", fake_send)
+
+    upw.UpdateWeightFromDistributed._send_weights_to_rollout_engines(obj)
+
+    assert connect_calls == ["vime-pp_0"]
+    assert send_calls == [
+        (0, True, "vime-pp_0", True, DummyGroup("vime-pp_0")),
+        (1, False, "vime-pp_0", False, DummyGroup("vime-pp_0")),
+    ]
+    assert barriers == ["gloo", "gloo", "gloo", "gloo"]
+    assert obj._active_weight_sync_pp_rank is None
+    assert obj._is_pp_src_rank is True
+    assert obj._group_name == "vime-pp_0"
+
+
+@pytest.mark.unit
+def test_inactive_pp_stage_joins_raw_send_barriers_without_iterating(upw, monkeypatch):
+    obj = _make_instance(upw)
+    obj._active_weight_sync_pp_rank = 1
+    barriers: list[object] = []
+
+    monkeypatch.setattr(upw.mpu, "get_pipeline_model_parallel_rank", lambda: 0)
+    monkeypatch.setattr(upw, "get_gloo_group", lambda: "gloo")
+    monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: barriers.append(kwargs.get("group")))
+    obj._iter_non_expert_chunks = lambda: (_ for _ in ()).throw(AssertionError("inactive stage must not iterate"))
+    obj._iter_expert_chunks = lambda: (_ for _ in ()).throw(AssertionError("inactive stage must not iterate"))
+
+    upw.UpdateWeightFromDistributed._send_weights(obj, pbar=None)
+
+    assert barriers == ["gloo", "gloo"]
+
+
+@pytest.mark.unit
+def test_bridge_export_is_not_staged_by_pp(upw, monkeypatch):
+    obj = _make_instance(upw)
+    obj._pp_world_size = 2
+    obj._is_pp_src_rank = False
+    obj._hf_weight_iterator = MagicMock()
+    send_calls: list[tuple[object, object]] = []
+
+    monkeypatch.setattr(
+        upw.UpdateWeightFromDistributed,
+        "_send_weights",
+        lambda self, pbar: send_calls.append((getattr(self, "_active_weight_sync_pp_rank", None), pbar)),
+    )
+
+    upw.UpdateWeightFromDistributed._send_weights_to_rollout_engines(obj)
+
+    assert send_calls == [(None, None)]
+
+
+@pytest.mark.unit
+def test_bridge_export_runs_on_non_source_pp_stage(upw, monkeypatch):
+    obj = _make_instance(upw)
+    obj._is_pp_src_rank = False
+    obj._hf_weight_iterator = MagicMock()
+    obj._hf_weight_iterator.get_hf_weight_chunks.return_value = []
+    barriers: list[object] = []
+
+    monkeypatch.setattr(upw.UpdateWeightFromDistributed, "_use_vllm_packed", lambda self: True)
+    monkeypatch.setattr(upw, "get_gloo_group", lambda: "gloo")
+    monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: barriers.append(kwargs.get("group")))
+
+    upw.UpdateWeightFromDistributed._send_weights(obj, pbar=None)
+
+    obj._hf_weight_iterator.get_hf_weight_chunks.assert_called_once_with({})
+    assert barriers == ["gloo"]
+
+
+@pytest.mark.unit
 def test_weight_update_session_calls_start_and_finish(upw, monkeypatch):
     import torch.distributed as dist
 
@@ -566,7 +765,7 @@ def test_cuda_path_keeps_main_nccl_sender(upw, monkeypatch):
 @pytest.mark.unit
 def test_cuda_sync_once_after_all_buckets_not_per_bucket(upw, monkeypatch):
     send_src = inspect.getsource(upw.update_weights_from_distributed)
-    sync_src = inspect.getsource(upw.UpdateWeightFromDistributed.update_weights)
+    sync_src = inspect.getsource(upw.UpdateWeightFromDistributed._send_weights_to_rollout_engines)
     assert "torch.cuda.synchronize" not in send_src
     assert "torch.cuda.synchronize" in sync_src
 

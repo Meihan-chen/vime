@@ -76,13 +76,45 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) -> Rollout
 
 **Signature**:
 ```python
-async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
+async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample | list[Sample]
 ```
 
 **Use Cases**:
 - Implementing tool-calling or function-calling capabilities
 - Adding retrieval-augmented generation (RAG)
 - Multi-turn conversation handling
+
+#### Returning multiple training samples for one prompt
+
+In agentic settings such as subagents, multi-agent execution, or context compaction, one prompt rollout can naturally split into multiple trainable segments. For example, a subagent trajectory and the main-agent continuation may both need to be trained, or the context before and after compaction may be represented as separate segments.
+
+You do not need to replace the whole rollout function for this. A `custom_generate` function may return `list[Sample]`. The key contract is that sibling samples produced by the same rollout must share the same `rollout_id`, so vime keeps them together for train-step splitting and loss aggregation instead of counting them as independent rollouts.
+
+```python
+import copy
+
+from vime.utils.types import Sample
+
+
+async def custom_generate(args, sample: Sample, sampling_params: dict) -> list[Sample]:
+    segments = await run_agent_and_split_segments(args, sample, sampling_params)
+    rollout_id = sample.rollout_id if sample.rollout_id is not None else sample.index
+
+    samples: list[Sample] = []
+    for segment in segments:
+        s = copy.copy(sample)
+        s.tokens = segment.tokens
+        s.response = segment.response
+        s.response_length = segment.response_length
+        s.loss_mask = segment.loss_mask
+        s.reward = segment.reward
+        s.status = Sample.Status.COMPLETED
+        s.rollout_id = rollout_id
+        samples.append(s)
+    return samples
+```
+
+If one full trajectory has a single total reward but is split into `K` training segments, a common pattern is to distribute that reward across the segments, for example by assigning `reward / K` to each segment, so the same rollout reward is not amplified.
 
 ---
 
@@ -420,6 +452,28 @@ Stabilize MoE RL training by recording and replaying expert routing decisions to
 | --- | --- |
 | `--use-routing-replay` | Forward-backward routing consistency in training. ([arXiv:2507.18071](https://arxiv.org/abs/2507.18071)) |
 | `--use-rollout-routing-replay` | R3: Replay routing from rollout during training. Supported by vime's default `vllm_rollout` path. ([arXiv:2510.11370](https://arxiv.org/abs/2510.11370)) |
+
+---
+
+### 19. Disk Weight-Sync Post-Write Hook (`--custom-update-weight-post-write-path`)
+
+**Signature**:
+```python
+def hook(args, version_dir: str, rollout_engines) -> None
+```
+
+**Purpose**: Called on each trainer rank after a disk weight sync's files are written
+(`--update-weight-transport disk`, full or delta mode), before the engines read them. Use it to
+publish the writes on a non-POSIX shared filesystem — e.g. upload pending writes to the
+backing object store — where another host cannot see the files without an explicit sync. The hook is called
+on every rank and must gate itself (e.g. once per container).
+
+The read-side counterpart runs inside the inference engine, on every host it spans, and is
+therefore an vllm server argument rather than a vime hook: pass
+`--vllm-custom-pull-weights-pre-read-hook <import.path>` with signature
+`hook(source_dir: str, target_version: int)` — called before `/pull_weights` reads the
+published weights (e.g. refresh the mount's view). See
+[Delta Weight Sync](../advanced/delta-weight-sync.md) for the full mechanism.
 
 ## Testing Custom Function Paths
 

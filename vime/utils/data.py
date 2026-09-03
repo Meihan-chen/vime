@@ -17,7 +17,7 @@ from vime.utils.types import MultimodalTypes, Sample
 
 from .timer import Timer
 
-__all__ = ["Dataset"]
+__all__ = ["Dataset", "get_source"]
 
 logger = logging.getLogger(__name__)
 
@@ -105,11 +105,11 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
                 if len(input_ids) <= max_length:
                     filtered_samples.append(sample)
         if multimodal:
-            from vime.utils.processing_utils import process_vision_info
+            from vime.utils.processing_utils import build_processor_kwargs
 
             for sample in multimodal:
-                multimodal_inputs = process_vision_info(sample.prompt, processor)
-                processor_output = processor(text=sample.prompt, **multimodal_inputs)
+                processor_kwargs = build_processor_kwargs(sample.multimodal_inputs)
+                processor_output = processor(text=sample.prompt, **processor_kwargs)
                 input_ids = processor_output["input_ids"][0]
                 if len(input_ids) <= max_length:
                     filtered_samples.append(sample)
@@ -161,7 +161,14 @@ def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimod
                             f"Not enough {mt.name} data: more '{mt.placeholder}' placeholders in prompt "
                             f"than {mt.name}s provided in data"
                         )
-                        content_list.append({"type": mt.name, mt.name: content.pop(0)})
+                        item = content.pop(0)
+                        # Support rich image config from https://github.com/QwenLM/Qwen3-VL/blob/main/README.md
+                        # "images": [{"type": "image", "image": "path/to/img/01.jpeg", "max_pixels": 50176, "min_pixels": 50176}, {...}]
+                        if isinstance(item, dict):
+                            content_list.append(item)
+                        # "images": ["path/to/img/01.jpeg", "url", "base64enc"]
+                        else:
+                            content_list.append({"type": mt.name, mt.name: item})
                     else:
                         content_list.append({"type": "text", "text": segment})
                 message["content"] = content_list
@@ -294,3 +301,12 @@ def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
     rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
 
     return rollout_data
+
+
+def get_source(sample: Sample) -> str:
+    metadata = getattr(sample, "metadata", None) or {}
+    if getattr(sample, "source", None):
+        return sample.source
+    if metadata.get("source_name"):
+        return metadata["source_name"]
+    return "unknown"

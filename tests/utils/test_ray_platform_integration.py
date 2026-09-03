@@ -81,6 +81,10 @@ def test_placement_group_uses_platform_ray_resource_contract(monkeypatch):
 
     monkeypatch.setattr(placement_group_module, "placement_group", fake_placement_group)
     monkeypatch.setattr(placement_group_module, "InfoActor", FakeInfoActorClass)
+    wait_results = iter([([], ["ready"]), (["ready"], [])])
+    monkeypatch.setattr(placement_group_module.ray, "wait", lambda *_args, **_kwargs: next(wait_results))
+    monkeypatch.setattr(placement_group_module.ray, "cluster_resources", lambda: {"ACCEL": 2})
+    monkeypatch.setattr(placement_group_module.ray, "available_resources", lambda: {"ACCEL": 2})
     monkeypatch.setattr(placement_group_module.ray, "get", lambda value: value)
     monkeypatch.setattr(placement_group_module.ray, "kill", lambda _actor: None)
 
@@ -97,6 +101,12 @@ def test_placement_group_uses_platform_ray_resource_contract(monkeypatch):
     assert [options["num_gpus"] for options in actor_options] == [0, 0]
     assert ray_ops.bundle_resources.call_count == 2
     assert [entry.args for entry in ray_ops.actor_options.call_args_list] == [(1,), (1,)]
+
+
+def test_ray_noset_visible_devices_keeps_ascend_entry():
+    from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+
+    assert "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES" in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 
 
 def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
@@ -119,6 +129,7 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
 
     class FakeActorHandle:
         get_master_addr_and_port = SimpleNamespace(remote=lambda: ("127.0.0.1", 20000))
+        init = SimpleNamespace(remote=lambda *_args, **_kwargs: 0)
 
     class FakeRemoteActor:
         def options(self, **options):
@@ -142,13 +153,14 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
         colocate=False,
         use_routing_replay=False,
     )
-    actor_group_module.RayTrainGroup(
+    group = actor_group_module.RayTrainGroup(
         args=args,
         num_nodes=1,
         num_gpus_per_node=1,
         pg=(object(), [0], [7]),
         num_gpus_per_actor=0.4,
     )
+    assert group.create() == [0]
 
     assert runtime_env_inputs[0][0] is args
     assert runtime_env_inputs[0][1]["USER_ENV"] == "yes"

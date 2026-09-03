@@ -120,6 +120,30 @@ def test_npu_runtime_env_is_scoped_to_npu_provider(monkeypatch, tmp_path):
     assert rollout_env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:False"
 
 
+def test_npu_vllm_env_replaces_cuda_and_rocm_visibility(monkeypatch):
+    monkeypatch.setenv("VIME_PLATFORM", "npu")
+    platform = current_platform()
+
+    env = platform.vllm.subprocess_env(
+        {
+            "KEEP": "1",
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+            "CUDA_VISIBLE_DEVICES": "0,1",
+            "HIP_VISIBLE_DEVICES": "0,1",
+        },
+        visible_devices="4,5",
+        colocate=True,
+    )
+
+    assert env["KEEP"] == "1"
+    assert "PYTORCH_CUDA_ALLOC_CONF" not in env
+    assert "CUDA_VISIBLE_DEVICES" not in env
+    assert "HIP_VISIBLE_DEVICES" not in env
+    assert env["ASCEND_RT_VISIBLE_DEVICES"] == "4,5"
+    assert env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:False"
+    assert platform.vllm.worker_extension_cls(colocate=True).endswith(".vLLMColocateWorkerExtension")
+
+
 def test_memory_utils_keep_main_cuda_compatibility_surface(monkeypatch):
     from vime.utils import memory_utils
 

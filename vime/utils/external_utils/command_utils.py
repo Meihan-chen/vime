@@ -59,7 +59,7 @@ def convert_checkpoint(
 
     exec_command(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
-        f"PYTHONPATH=/root/Megatron-LM "
+        f"PYTHONPATH={repo_base_dir}:/root/Megatron-LM:${{PYTHONPATH:-}} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
@@ -138,15 +138,17 @@ def execute_train(
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
     exec_command(
-        # vLLM renames its subprocesses (VLLM::EngineCore / Worker_TP*), so match
-        # the renamed children too; the [v]/[M] brackets avoid matching pkill itself.
         "pkill -9 -f '[v]llm serve|VLL[M]::'; "
         "sleep 3; "
         f"{'' if external_ray else 'ray stop --force; '}"
         f"{'' if external_ray else 'pkill -9 ray; '}"
+        # cannot be run in CI, o/w kill the parent script
+        # TODO: do we really need this kill? (or can we instead kill vime)
+        # "pkill -9 python; "
         "pkill -9 vime; "
         "sleep 3; "
         f"{'' if external_ray else 'pkill -9 ray; '}"
+        # "pkill -9 python; "
         "pkill -9 vime; "
         "pkill -9 redis; "
         "true; "
@@ -166,8 +168,9 @@ def execute_train(
         {
             "env_vars": {
                 "PYTHONPATH": "/root/Megatron-LM/",
+                "RAY_USE_UVLOOP": "0",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
+                "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,

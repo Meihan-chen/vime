@@ -76,13 +76,45 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) -> Rollout
 
 **函数签名**:
 ```python
-async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
+async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample | list[Sample]
 ```
 
 **使用场景**:
 - 实现工具调用（tool-calling）或函数调用（function-calling）能力
 - 添加检索增强生成（RAG）
 - 多轮对话处理
+
+#### 一个 prompt 产生多个训练样本
+
+在 subagent、multi-agent、context compact 等 agentic 场景中，一次 prompt rollout 可能会自然拆成多个可训练片段。例如：主 agent 调用 subagent 后，subagent 的轨迹和主 agent 的后续轨迹都需要参与训练；或者发生 compact 后，compact 前后的上下文被切成多个 segment。
+
+这种情况下不需要重写整个 rollout 函数，`custom_generate` 可以直接返回 `list[Sample]`。关键是：这些由同一次 rollout 拆出来的 sibling samples 必须设置相同的 `rollout_id`，这样 vime 会在训练切分和 loss 聚合时把它们视作同一次 rollout，而不是重复计数为多次独立 rollout。
+
+```python
+import copy
+
+from vime.utils.types import Sample
+
+
+async def custom_generate(args, sample: Sample, sampling_params: dict) -> list[Sample]:
+    segments = await run_agent_and_split_segments(args, sample, sampling_params)
+    rollout_id = sample.rollout_id if sample.rollout_id is not None else sample.index
+
+    samples: list[Sample] = []
+    for segment in segments:
+        s = copy.copy(sample)
+        s.tokens = segment.tokens
+        s.response = segment.response
+        s.response_length = segment.response_length
+        s.loss_mask = segment.loss_mask
+        s.reward = segment.reward
+        s.status = Sample.Status.COMPLETED
+        s.rollout_id = rollout_id
+        samples.append(s)
+    return samples
+```
+
+如果一个完整 trajectory 只有一个总奖励、但被拆成了 `K` 个训练片段，常见做法是在这些片段之间分配这个奖励（例如每个片段写入 `reward / K`），避免把同一次 rollout 的奖励重复放大。
 
 ---
 
@@ -422,6 +454,25 @@ def custom_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler
 | --- | --- |
 | `--use-routing-replay` | 训练中前向-反向路由一致性。([arXiv:2507.18071](https://arxiv.org/abs/2507.18071)) |
 | `--use-rollout-routing-replay` | R3：在训练时重放 rollout 阶段的路由。vime 默认的 `vllm_rollout` 路径支持该功能。([arXiv:2510.11370](https://arxiv.org/abs/2510.11370)) |
+
+---
+
+### 19. Disk 权重同步 Post-Write Hook（`--custom-update-weight-post-write-path`）
+
+**签名**：
+```python
+def hook(args, version_dir: str, rollout_engines) -> None
+```
+
+**用途**：在 disk 权重同步（`--update-weight-transport disk`，full 或 delta 模式）的文件写完之后、
+engine 读取之前，在每个训练 rank 上调用。用于在非 POSIX 共享文件系统上发布写入——例如 commit
+一个对象存储挂载——否则其他 host 无法看到这些文件。hook 会在每个 rank 上被调用，需要自行去重
+（例如每个容器只执行一次）。
+
+读取侧的对应 hook 运行在推理引擎内部、engine 覆盖的每个 host 上，因此它是一个 vllm server
+参数而不是 vime hook：传入 `--vllm-custom-pull-weights-pre-read-hook <import.path>`，签名为
+`hook(source_dir: str, target_version: int)`——在 `/pull_weights` 读取已发布权重之前调用
+（例如刷新挂载视图）。完整机制见 [Delta 权重同步](../advanced/delta-weight-sync.md)。
 
 ## 自定义函数路径的测试
 

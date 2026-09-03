@@ -156,6 +156,7 @@ class NpuVLLMLaunchPlatformOps(VLLMLaunchPlatformOps):
         env = dict(base_env)
         env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
         env.pop("CUDA_VISIBLE_DEVICES", None)
+        env.pop("HIP_VISIBLE_DEVICES", None)
         env["ASCEND_RT_VISIBLE_DEVICES"] = visible_devices
         env["VLLM_USE_AOT_COMPILE"] = "0"
         cann_python_path = _cann_python_site_packages()
