@@ -83,7 +83,7 @@ def execute():
 
     vllm_args = (
         "--rollout-num-gpus-per-engine 1 "
-        "--vllm-gpu-memory-utilization 0.8 "
+        "--vllm-gpu-memory-utilization 0.7 "
         "--vllm-max-model-len 16384 "
         "--vllm-generation-config auto "
         "--vllm-logprobs-mode processed_logprobs "
