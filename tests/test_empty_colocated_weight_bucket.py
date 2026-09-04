@@ -150,42 +150,44 @@ def _load_update_weight_module(monkeypatch):
     return module, dist_state
 
 
-def test_empty_colocated_bucket_does_not_hide_remote_weights(monkeypatch):
+def test_packed_colocated_bucket_rejects_mismatched_rank_metadata(monkeypatch):
     module, _ = _load_update_weight_module(monkeypatch)
-    empty = {"names": [], "dtype_names": [], "shapes": [], "ipc_handles": []}
+    empty = {
+        "names": [],
+        "dtype_names": [],
+        "shapes": [],
+        "tensor_sizes": [],
+        "ipc_handles": {"gpu-0": ("empty",)},
+    }
     remote = {
         "names": ["expert.weight"],
         "dtype_names": ["bfloat16"],
         "shapes": [[4, 8]],
-        "ipc_handles": [{"gpu-1": ("remote",)}],
+        "tensor_sizes": [64],
+        "ipc_handles": {"gpu-1": ("remote",)},
     }
 
-    assert module._merge_ipc_update_infos([empty, remote]) == remote
+    with pytest.raises(ValueError, match="packed IPC metadata must match"):
+        module._merge_ipc_update_infos([empty, remote])
 
 
-def test_colocated_bucket_merges_handles_by_parameter_name(monkeypatch):
+def test_packed_colocated_bucket_merges_rank_handles(monkeypatch):
     module, _ = _load_update_weight_module(monkeypatch)
     first = {
-        "names": ["shared.weight"],
-        "dtype_names": ["float16"],
-        "shapes": [[2, 2]],
-        "ipc_handles": [{"gpu-0": ("first",)}],
-    }
-    second = {
-        "names": ["expert.weight", "shared.weight"],
-        "dtype_names": ["bfloat16", "float16"],
-        "shapes": [[4, 8], [2, 2]],
-        "ipc_handles": [{"gpu-1": ("expert",)}, {"gpu-1": ("second",)}],
-    }
-
-    assert module._merge_ipc_update_infos([first, second]) == {
         "names": ["shared.weight", "expert.weight"],
         "dtype_names": ["float16", "bfloat16"],
         "shapes": [[2, 2], [4, 8]],
-        "ipc_handles": [
-            {"gpu-0": ("first",), "gpu-1": ("second",)},
-            {"gpu-1": ("expert",)},
-        ],
+        "tensor_sizes": [8, 64],
+        "ipc_handles": {"gpu-0": ("first",)},
+    }
+    second = {
+        **first,
+        "ipc_handles": {"gpu-1": ("second",)},
+    }
+
+    assert module._merge_ipc_update_infos([first, second]) == {
+        **first,
+        "ipc_handles": {"gpu-0": ("first",), "gpu-1": ("second",)},
     }
 
 

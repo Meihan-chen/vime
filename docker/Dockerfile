@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=vllm/vllm-openai:v0.23.0-cu129-ubuntu2404
+ARG BASE_IMAGE=vllm/vllm-openai:v0.25.1-ubuntu2404
 FROM ${BASE_IMAGE}
 
 # ======================================== Arguments =============================================
@@ -6,7 +6,8 @@ FROM ${BASE_IMAGE}
 ARG PATCH_VERSION=latest
 ARG MEGATRON_COMMIT=1dcf0dafa884ad52ffb243625717a3471643e087
 
-ARG ENABLE_CUDA_13=0
+ARG ENABLE_CUDA_13=1
+ARG FA2_MAX_JOBS=64
 
 # ======================================== Setup =============================================
 
@@ -39,7 +40,7 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
 # The validated TransformerEngine 2.16 context-parallel stack uses FA2 + FA3.
 RUN pip uninstall -y flash-attn-4 flash_attn_4 || true
-RUN MAX_JOBS=64 pip -v install flash-attn==2.8.3 --no-build-isolation
+RUN MAX_JOBS=${FA2_MAX_JOBS} pip -v install flash-attn==2.8.3 --no-build-isolation
 
 # This FA3 commit provides the window_size_left/window_size_right API used by TE 2.16.
 RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
@@ -72,7 +73,7 @@ RUN apt-get update && \
 
 # TE does not publish a cu13 wheel; build from source when ENABLE_CUDA_13=1.
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install nvidia-mathdx==26.6.0 pybind11 ninja wheel packaging && \
+      pip install nvidia-mathdx==25.6.0 pybind11 ninja wheel packaging && \
       pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.16; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.16.1"; \
@@ -92,7 +93,18 @@ RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
 RUN TMS_CUDA_MAJOR="$(python -c 'import torch; print(torch.version.cuda.split(".")[0])')" && \
     export TMS_CUDA_MAJOR && \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@a193d9dd1b877d33c64a41cfb3db9f867df2d926 --no-cache-dir --force-reinstall
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
+ARG MEGATRON_BRIDGE_COMMIT=07d61e1547a8356cc34928f7eb20226d2f9db3fa
+RUN git clone https://github.com/radixark/Megatron-Bridge.git && \
+    cd Megatron-Bridge && git checkout ${MEGATRON_BRIDGE_COMMIT}
+COPY docker/patch/${PATCH_VERSION}/megatron_bridge.patch /root/Megatron-Bridge/
+RUN cd Megatron-Bridge && \
+    git apply megatron_bridge.patch --3way && \
+    if grep -R -n '^<<<<<<< ' .; then \
+      echo "Patch failed to apply cleanly. Please resolve conflicts." && \
+      exit 1; \
+    fi && \
+    rm megatron_bridge.patch && \
+    pip install . --no-deps --no-build-isolation
 RUN pip install nvidia-modelopt[torch]>=0.37.0 --no-build-isolation
 
 COPY requirements.txt /tmp/requirements.txt

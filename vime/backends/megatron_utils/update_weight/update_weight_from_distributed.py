@@ -165,6 +165,15 @@ class UpdateWeightFromDistributed:
         finally:
             _end_vllm_weight_update_session(self.rollout_engines)
 
+        if self.args.enable_mtp_training and (self.args.vllm_speculative_config or {}).get("method") == "mtp":
+            if dist.get_rank() == 0:
+                ray.get([engine.start_draft_weight_update.remote() for engine in self.rollout_engines])
+            dist.barrier(group=get_gloo_group())
+            try:
+                self._send_weights_to_rollout_engines()
+            finally:
+                _end_vllm_weight_update_session(self.rollout_engines)
+
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
             # int4/fp4 post_process
@@ -223,27 +232,24 @@ class UpdateWeightFromDistributed:
         yields broadcast-ready chunks (bucketing happens internally).
         """
         if self._hf_weight_iterator is not None:
-            use_vllm_packed = self._use_vllm_packed()
-            self._sync_bridge_weights_to_rollout_engines(pbar, use_vllm_packed=use_vllm_packed)
+            self._sync_bridge_weights_to_rollout_engines(pbar)
             return
 
         is_active_stage = self._is_active_weight_sync_pp_stage()
-        use_vllm_packed = False
         if is_active_stage:
-            use_vllm_packed = self._use_vllm_packed()
-            if use_vllm_packed and self._is_pp_src_rank:
+            if self._is_pp_src_rank:
                 logger.info("Using vLLM packed weight sync (bucketed; metadata + trainer_send_weights per bucket)")
 
             for hf_chunk in self._iter_non_expert_chunks():
-                self._update_bucket_weights_from_distributed(hf_chunk, pbar=pbar, packed=use_vllm_packed)
+                self._update_bucket_weights_from_distributed(hf_chunk, pbar=pbar)
         dist.barrier(group=get_gloo_group())
 
-        if is_active_stage and not use_vllm_packed:
+        if is_active_stage:
             for hf_chunk in self._iter_expert_chunks():
-                self._update_bucket_weights_from_distributed(hf_chunk, pbar=pbar, packed=False)
+                self._update_bucket_weights_from_distributed(hf_chunk, pbar=pbar)
         dist.barrier(group=get_gloo_group())
 
-    def _sync_bridge_weights_to_rollout_engines(self, pbar: tqdm | None, *, use_vllm_packed: bool) -> None:
+    def _sync_bridge_weights_to_rollout_engines(self, pbar: tqdm | None) -> None:
         """
         Export HF weights through Megatron-Bridge, then send each exported chunk
         over the same NCCL non-colocate path used by the raw converter.
@@ -255,19 +261,9 @@ class UpdateWeightFromDistributed:
         for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights):
             if self._is_pp_src_rank:
                 hf_named_tensors = list(hf_named_tensors)
-                self._update_bucket_weights_from_distributed(hf_named_tensors, pbar=pbar, packed=use_vllm_packed)
+                self._update_bucket_weights_from_distributed(hf_named_tensors, pbar=pbar)
 
         dist.barrier(group=get_gloo_group())
-
-    def _use_vllm_packed(self) -> bool:
-        """Use vLLM packed weight transfer (one-shot metadata + trainer_send_weights)."""
-        if not getattr(self.args, "vllm_weight_sync_packed", True):
-            return False
-        if any(".experts." in name for name, _ in named_params_and_buffers(self.args, self.model)):
-            return False
-        if self.quantization_config and self.quantization_config.get("quant_method") == "compressed-tensors":
-            return False
-        return True
 
     def _iter_non_expert_chunks(self) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """
@@ -299,28 +295,32 @@ class UpdateWeightFromDistributed:
         params: Iterator[tuple[str, torch.Tensor]] | None = None,
     ) -> Iterator[list[tuple[str, torch.Tensor]]]:
         """
-        Yield one HF chunk per EP-weighted batch of expert params: TP gather +
-        buffer until threshold, then EP gather + HF convert.
+        Keep each expert layer together, then bucket complete layers before
+        EP gather and HF conversion.
         """
         if params is None:
             params = ((n, p) for n, p in named_params_and_buffers(self.args, self.model) if ".experts." in n)
 
+        expert_groups: dict[str, list[tuple[str, torch.Tensor]]] = {}
+        for name, param in params:
+            layer_name = name.split(".experts.", 1)[0]
+            expert_groups.setdefault(layer_name, []).append((name, param))
+
         buffer_size = 0
         batch: list[tuple[str, torch.Tensor]] = []
-        for name, param in params:
-            param = all_gather_param(name, param)
-            param_size = param.numel() * param.element_size()
-            if (
-                buffer_size + param_size
-            ) * mpu.get_expert_model_parallel_world_size() > self.args.update_weight_buffer_size:
+        ep_size = mpu.get_expert_model_parallel_world_size()
+        for expert_params in expert_groups.values():
+            gathered_params = [(name, all_gather_param(name, param)) for name, param in expert_params]
+            group_size = sum(param.numel() * param.element_size() for _, param in gathered_params)
+            if batch and (buffer_size + group_size) * ep_size > self.args.update_weight_buffer_size:
                 hf_chunk = self._ep_gather_and_convert(batch)
                 if hf_chunk:
                     yield hf_chunk
                 batch = []
                 buffer_size = 0
 
-            batch.append((name, param))
-            buffer_size += param_size
+            batch.extend(gathered_params)
+            buffer_size += group_size
 
         if batch:
             hf_chunk = self._ep_gather_and_convert(batch)
@@ -332,6 +332,14 @@ class UpdateWeightFromDistributed:
         EP all-gather a buffered batch + HF convert on PP source. Returns HF tensors on
         PP source, [] elsewhere. Clears ``named_tensors``.
         """
+        if mpu.get_expert_model_parallel_world_size() == 1:
+            converted = []
+            if self._is_pp_src_rank:
+                for name, param in named_tensors:
+                    converted.extend(convert_to_hf(self.args, self.model_name, name, param, self.quantization_config))
+            named_tensors.clear()
+            return converted
+
         names = [name for name, _ in named_tensors]
         all_names = [None] * mpu.get_expert_model_parallel_world_size()
         dist.all_gather_object(all_names, names, group=mpu.get_expert_model_parallel_group())
@@ -368,8 +376,6 @@ class UpdateWeightFromDistributed:
         self,
         converted_named_tensors: list[tuple[str, torch.Tensor]],
         pbar: tqdm | None = None,
-        *,
-        packed: bool = False,
     ) -> None:
         """
         Lock → broadcast → clear → unlock → pbar++. Lock prevents NCCL deadlock.
@@ -379,12 +385,10 @@ class UpdateWeightFromDistributed:
             time.sleep(0.1)
 
         refs = update_weights_from_distributed(
-            self._group_name,
             self._model_update_groups,
             self.weight_version,
             self.rollout_engines,
             converted_named_tensors,
-            packed=packed,
         )
 
         ray.get(refs)
@@ -497,13 +501,10 @@ def disconnect_rollout_engines_from_distributed(
 
 
 def update_weights_from_distributed(
-    group_name: str,
     group: Any,
     weight_version: int,
     rollout_engines: Sequence[ActorHandle],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
-    *,
-    packed: bool = False,
 ) -> list[ObjectRef]:
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
@@ -516,9 +517,7 @@ def update_weights_from_distributed(
             names=[name for name, _ in converted_named_tensors],
             dtypes=[param.dtype for _, param in converted_named_tensors],
             shapes=[param.shape for _, param in converted_named_tensors],
-            group_name=group_name,
             weight_version=str(weight_version),
-            packed=packed,
         )
         for engine in rollout_engines
     ]
@@ -538,7 +537,7 @@ def update_weights_from_distributed(
 
     NCCLWeightTransferEngine.trainer_send_weights(
         named_gpu_iter,
-        NCCLTrainerSendWeightsArgs(group=group, packed=packed),
+        NCCLTrainerSendWeightsArgs(group=group, packed=True),
     )
 
     return refs

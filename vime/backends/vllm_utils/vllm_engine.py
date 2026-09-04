@@ -1,7 +1,6 @@
 import argparse
 import base64
 import dataclasses
-import ipaddress
 import logging
 import multiprocessing
 import os
@@ -16,7 +15,7 @@ from vllm.utils.system_utils import kill_process_tree
 from vime.backends.vllm_utils.external import get_server_info
 from vime.platforms import current_platform
 from vime.ray.ray_actor import RayActor
-from vime.utils.http_utils import get_host_info
+from vime.utils.http_utils import _wrap_ipv6, get_host_info
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +38,8 @@ def get_base_gpu_id(args, rank):
 def launch_server_process(server_args_dict: dict) -> multiprocessing.Process:
     env = _build_subprocess_env(server_args_dict)
     kwargs = {k: v for k, v in server_args_dict.items() if not k.startswith("_")}
+    host = _wrap_ipv6(kwargs.get("host") or "127.0.0.1")
+    kwargs["host"] = host.strip("[]")
     logger.info("Launching vLLM server: %s", kwargs)
 
     multiprocessing.set_start_method("spawn", force=True)
@@ -49,7 +50,7 @@ def launch_server_process(server_args_dict: dict) -> multiprocessing.Process:
         return p
 
     _wait_server_healthy(
-        base_url=f"http://{(server_args_dict['host'] or '127.0.0.1').strip('[]')}:{server_args_dict['port']}",
+        base_url=f"http://{host}:{server_args_dict['port']}",
         is_process_alive=lambda: p.is_alive(),
     )
 
@@ -59,7 +60,6 @@ def launch_server_process(server_args_dict: dict) -> multiprocessing.Process:
 def _build_subprocess_env(server_args_dict: dict[str, Any]) -> dict[str, str]:
     args = server_args_dict["_args"]
     env = os.environ.copy()
-    env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
     env.setdefault("NCCL_CUMEM_ENABLE", "0")
     env["CUDA_VISIBLE_DEVICES"] = server_args_dict["_visible_devices"]
     # ROCm: keep HIP visibility in sync with CUDA (no-op on CUDA).
@@ -149,24 +149,14 @@ class VLLMEngine(RayActor):
     ):
         del nccl_port
 
-        self.router_ip = router_ip
+        self.router_ip = _wrap_ipv6(router_ip) if router_ip is not None else None
         self.router_port = router_port
 
         host = host or get_host_info()[1]
 
-        def _format_v6_uri(addr):
-            if not addr or addr.startswith("["):
-                return addr
-            try:
-                if ipaddress.ip_address(addr).version == 6:
-                    return f"[{addr}]"
-            except ValueError:
-                pass
-            return addr
-
-        host = _format_v6_uri(host)
+        host = _wrap_ipv6(host)
         ip_part, port_part = dist_init_addr.rsplit(":", 1)
-        dist_init_addr = f"{_format_v6_uri(ip_part)}:{port_part}"
+        dist_init_addr = f"{_wrap_ipv6(ip_part)}:{port_part}"
 
         server_args_dict, external_engine_need_check_fields = _compute_server_args(
             self.args,
@@ -182,7 +172,7 @@ class VLLMEngine(RayActor):
         )
 
         self.node_rank = server_args_dict["node_rank"]
-        self.server_host = server_args_dict["host"]
+        self.server_host = server_args_dict["host"]  # with [] if ipv6
         self.server_port = server_args_dict["port"]
 
         if self.args.rollout_external:
@@ -282,13 +272,19 @@ class VLLMEngine(RayActor):
         names: list[str],
         dtype_names: list[str],
         shapes: list[list[int]],
-        ipc_handles: list[dict] | None = None,
+        ipc_handles: dict[str, tuple],
+        tensor_sizes: list[int],
         weight_version: str,
         flush_cache: bool = False,
     ):
-        payload: dict = {"names": names, "dtype_names": dtype_names, "shapes": shapes}
-        if ipc_handles is not None:
-            payload["ipc_handles_pickled"] = base64.b64encode(cloudpickle.dumps(ipc_handles)).decode("utf-8")
+        payload: dict = {
+            "names": names,
+            "dtype_names": dtype_names,
+            "shapes": shapes,
+            "ipc_handles_pickled": base64.b64encode(cloudpickle.dumps(ipc_handles)).decode("utf-8"),
+            "tensor_sizes": tensor_sizes,
+            "packed": True,
+        }
         if flush_cache:
             self.flush_cache()
         result = self._make_request("update_weights", {"update_info": payload})
@@ -370,6 +366,9 @@ class VLLMEngine(RayActor):
     def start_weight_update(self, is_checkpoint_format: bool = False) -> dict:
         return self._make_request("start_weight_update", {"is_checkpoint_format": is_checkpoint_format})
 
+    def start_draft_weight_update(self) -> dict:
+        return self._make_request("start_draft_weight_update", {})
+
     def finish_weight_update(self) -> dict:
         return self._make_request("finish_weight_update", {})
 
@@ -428,13 +427,10 @@ class VLLMEngine(RayActor):
         names,
         dtypes,
         shapes,
-        group_name,
         *,
         flush_cache=False,
         weight_version: str,
-        packed: bool = True,
     ):
-        del group_name
         if flush_cache:
             self.flush_cache()
         dtype_names = [str(d).replace("torch.", "") for d in dtypes]
@@ -442,7 +438,7 @@ class VLLMEngine(RayActor):
             "names": names,
             "dtype_names": dtype_names,
             "shapes": [list(s) for s in shapes],
-            "packed": bool(packed),
+            "packed": True,
         }
         result = self._make_request("update_weights", {"update_info": update_info})
         self._weight_version = str(weight_version)
@@ -543,6 +539,9 @@ def _compute_server_args(
     vllm_overrides: dict | None = None,
     num_gpus_per_engine: int | None = None,
 ):
+    vllm_overrides = dict(vllm_overrides or {})
+    ec_transfer_override = vllm_overrides.pop("ec_transfer_config", None)
+
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
@@ -568,13 +567,11 @@ def _compute_server_args(
         master_addr = ip_part.strip("[]")
         master_port = int(port_part)
 
-    host_for_subprocess = (host or "127.0.0.1").strip("[]")
-
     kwargs: dict[str, Any] = {
         "model": str(args.hf_checkpoint),
         "trust_remote_code": True,
         "seed": args.seed + rank,
-        "host": host_for_subprocess,
+        "host": _wrap_ipv6(host or "127.0.0.1"),
         "port": port,
         "nnodes": nnodes,
         "node_rank": node_rank,
@@ -609,6 +606,13 @@ def _compute_server_args(
             "kv_role": "kv_consumer",
         }
 
+    if ec_transfer_override is not None and worker_type in ("encoder", "regular", "prefill"):
+        kwargs["ec_transfer_config"] = {
+            "ec_connector": "ECExampleConnector",
+            "ec_role": "ec_producer" if worker_type == "encoder" else "ec_consumer",
+            **ec_transfer_override,
+        }
+
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
     if args.fp16:
@@ -628,6 +632,12 @@ def _compute_server_args(
         kwargs["weight_transfer_config"] = {"backend": "ipc"}
     else:
         kwargs["weight_transfer_config"] = {"backend": "nccl"}
+
+    if worker_type == "encoder":
+        # vLLM EPD producers have no language-model KV cache groups. Prefix
+        # caching must therefore be disabled; vLLM's EPD reference launcher
+        # uses the same setting.
+        kwargs["enable_prefix_caching"] = False
 
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
@@ -671,6 +681,7 @@ def _compute_server_args(
         extension_cls = current_platform().vllm.worker_extension_cls(colocate=args.colocate)
         if extension_cls is not None:
             kwargs["worker_extension_cls"] = extension_cls
+    kwargs["host"] = _wrap_ipv6(kwargs.get("host") or "127.0.0.1")
 
     # vLLM-specific: topology metadata consumed by launch_server_process / _build_subprocess_env.
     # These keys are stripped before passing to vLLM's argparse.

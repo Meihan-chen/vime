@@ -392,6 +392,22 @@ def test_start_weight_update_posts_four_phase_endpoint(vllm_engine, monkeypatch)
 
 
 @pytest.mark.unit
+def test_start_draft_weight_update_posts_empty_body(vllm_engine, monkeypatch):
+    calls: list[tuple] = []
+
+    def fake_post(endpoint: str, payload: dict):
+        calls.append((endpoint, payload))
+        return {"ok": True}
+
+    monkeypatch.setattr(vllm_engine, "_make_request", fake_post)
+
+    result = vllm_engine.start_draft_weight_update()
+
+    assert result == {"ok": True}
+    assert calls == [("start_draft_weight_update", {})]
+
+
+@pytest.mark.unit
 def test_finish_weight_update_posts_empty_body(vllm_engine, monkeypatch):
     calls: list[tuple] = []
 
@@ -418,12 +434,12 @@ def test_update_weights_from_tensor_posts_native_ipc_payload_and_records_version
     monkeypatch.setattr(vllm_engine, "_make_request", fake_post)
     assert vllm_engine._weight_version is None
 
-    ipc_handles = [{"uuid-gpu0": (1, 2, 3)}]
     vllm_engine.update_weights_from_tensor(
-        names=["layer.0.weight"],
-        dtype_names=["float32"],
-        shapes=[[2, 2]],
-        ipc_handles=ipc_handles,
+        names=["a", "b"],
+        dtype_names=["bfloat16", "float32"],
+        shapes=[[2], [1]],
+        ipc_handles={"uuid-gpu0": ("rebuild_fn", (1, 2, 3))},
+        tensor_sizes=[4, 4],
         weight_version="42",
     )
 
@@ -433,10 +449,10 @@ def test_update_weights_from_tensor_posts_native_ipc_payload_and_records_version
     # ipc_handles got cloudpickle'd into ipc_handles_pickled
     assert "ipc_handles" not in sent
     assert isinstance(sent["ipc_handles_pickled"], str)
-    assert pickle.loads(base64.b64decode(sent["ipc_handles_pickled"])) == ipc_handles
-    assert sent["names"] == ["layer.0.weight"]
-    assert sent["shapes"] == [[2, 2]]
-    assert "packed" not in sent
+    assert sent["names"] == ["a", "b"]
+    assert sent["shapes"] == [[2], [1]]
+    assert sent["tensor_sizes"] == [4, 4]
+    assert sent["packed"] is True
     # version recorded after POST success
     assert vllm_engine._weight_version == "42"
 
@@ -453,11 +469,7 @@ def test_update_weights_from_tensor_does_not_advance_version_on_failure(vllm_eng
     vllm_engine._weight_version = "old"
     with pytest.raises(RuntimeError, match="simulated POST failure"):
         vllm_engine.update_weights_from_tensor(
-            names=[],
-            dtype_names=[],
-            shapes=[],
-            ipc_handles=[],
-            weight_version="new",
+            names=[], dtype_names=[], shapes=[], ipc_handles={}, tensor_sizes=[], weight_version="new"
         )
     assert vllm_engine._weight_version == "old"
 
@@ -502,9 +514,7 @@ def test_update_weights_from_distributed_posts_update_weights_without_checkpoint
         names,
         dtypes,
         shapes,
-        group_name="vime-pp_0",
         weight_version="7",
-        packed=True,
     )
 
     assert len(calls) == 1
@@ -518,9 +528,61 @@ def test_update_weights_from_distributed_posts_update_weights_without_checkpoint
 
 
 @pytest.mark.unit
-def test_get_url_ipv6_host(vllm_engine):
-    vllm_engine.server_host = "[2001:db8::1]"
-    assert vllm_engine.get_url() == "http://[2001:db8::1]:8765"
+@pytest.mark.parametrize(
+    ("host", "expected_host"),
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("2001:db8::1", "[2001:db8::1]"),
+        ("[2001:db8::1]", "[2001:db8::1]"),
+    ],
+)
+def test_init_formats_server_and_router_hosts_for_urls(vllm_engine, monkeypatch, host, expected_host):
+    server_args = {}
+    monkeypatch.setattr(vllm_engine, "_init_external", lambda args, **kwargs: server_args.update(args))
+
+    vllm_engine.init(
+        dist_init_addr="127.0.0.1:29500",
+        port=8765,
+        nccl_port=None,
+        host=host,
+        router_ip=host,
+        router_port=30000,
+    )
+
+    assert server_args["host"] == expected_host
+    assert vllm_engine.server_host == expected_host
+    assert vllm_engine.router_ip == expected_host
+    assert vllm_engine.get_url() == f"http://{expected_host}:8765"
+
+
+@pytest.mark.unit
+def test_launch_server_process_brackets_ipv6_health_url(vllm_args, monkeypatch):
+    process = SimpleNamespace(start=lambda: None, is_alive=lambda: True)
+    base_urls = []
+    subprocess_args = {}
+
+    monkeypatch.setattr(mod, "_build_subprocess_env", lambda _: {})
+    monkeypatch.setattr(mod.multiprocessing, "set_start_method", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        mod.multiprocessing,
+        "Process",
+        lambda *, target, args: subprocess_args.update(args[0]) or process,
+    )
+    monkeypatch.setattr(mod, "_wait_server_healthy", lambda base_url, **_: base_urls.append(base_url))
+
+    launched_process = mod.launch_server_process(
+        {
+            "_args": vllm_args,
+            "_visible_devices": "0",
+            "host": "[2001:db8::1]",
+            "port": 8000,
+            "node_rank": 0,
+        }
+    )
+
+    assert launched_process is process
+    assert subprocess_args["host"] == "2001:db8::1"
+    assert base_urls == ["http://[2001:db8::1]:8000"]
 
 
 @pytest.mark.unit

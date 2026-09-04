@@ -2,6 +2,7 @@ import logging
 import os
 from argparse import Namespace
 from contextlib import nullcontext
+from datetime import timedelta
 from pathlib import Path
 
 import ray
@@ -19,7 +20,12 @@ from vime.utils.distributed_utils import get_gloo_group
 from vime.utils.logging_utils import init_tracking
 from vime.utils.memory_utils import clear_memory, print_memory
 from vime.utils.misc import Box
-from vime.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
+from vime.utils.reloadable_process_group import (
+    destroy_process_groups,
+    monkey_patch_torch_dist,
+    register_default_process_group,
+    reload_process_groups,
+)
 from vime.utils.routing_replay import RoutingReplay
 from vime.utils.timer import Timer, inverse_timer, timer, with_defer
 from vime.utils.types import RolloutBatch
@@ -58,6 +64,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
         monkey_patch_torch_dist()
         super().init(args, role, with_ref, with_opd_teacher)
+        # Disable this when external code keeps raw dist.group.WORLD references
+        # across a train sleep/wake cycle.
+        if os.getenv("VIME_DESTROY_WORLD_PROCESS_GROUP", "1").lower() not in {"0", "false", "no"}:
+            register_default_process_group(timeout=timedelta(minutes=args.distributed_timeout_minutes))
+        else:
+            logger.info("Default WORLD process-group destruction is disabled")
 
         init(args)
 

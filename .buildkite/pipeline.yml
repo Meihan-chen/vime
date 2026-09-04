@@ -58,7 +58,7 @@ steps:
         python:3.11 bash -c '
           set -euo pipefail
           pip install -q torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -q pytest numpy packaging pyyaml omegaconf tqdm httpx requests ray pybase64 pylatexenc sympy aiohttp pillow safetensors transformers cloudpickle blake3 xxhash zstandard
+          pip install -q pytest numpy packaging pyyaml omegaconf tqdm httpx requests ray pybase64 pylatexenc sympy aiohttp pillow safetensors transformers cloudpickle blake3 xxhash zstandard psutil
           pip install -q -e . --no-deps
           python tests/test_megatron_argument_validation.py
           python tests/test_value_temperature.py
@@ -83,6 +83,7 @@ steps:
           python tests/test_cispo_loss.py
           python tests/test_logprob_response_spans.py
           python tests/test_empty_colocated_weight_bucket.py
+          python tests/test_reloadable_process_group_memory_check.py
           python tests/test_ppo_logprob_entropy.py
           python tests/utils/test_hf_checkpoint_saver.py
         '
@@ -156,7 +157,7 @@ steps:
             value: vllm-config
           - label: "run-ci-megatron — up to 8 GPU, 20 runs"
             value: megatron
-          - label: "run-ci-vime-customized — 4 GPU, 1 test"
+          - label: "run-ci-vime-customized — 1–4 GPU, 3 tests"
             value: vime-customized
           - label: "run-ci-precision — 8 GPU, 1 test"
             value: precision

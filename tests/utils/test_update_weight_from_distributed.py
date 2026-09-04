@@ -18,8 +18,12 @@ if str(_tests_root) not in sys.path:
 import _unit_stubs
 import pytest
 import torch
+from vime.utils.types import ParamInfo
 
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_distributed"
+COMMON_MODULE = "vime.backends.megatron_utils.update_weight.common"
+DIRECT_MODULE = "vime.backends.megatron_utils.update_weight.hf_weight_iterator_direct"
+CONVERTER_MODULE = "vime.backends.megatron_utils.megatron_to_hf"
 
 NUM_GPUS = 0
 
@@ -186,7 +190,7 @@ def _patch_trainer_send(monkeypatch, upw, seen: list[dict]) -> None:
 
 def _make_instance(upw):
     obj = object.__new__(upw.UpdateWeightFromDistributed)
-    obj.args = type("Args", (), {"update_weight_buffer_size": 1 << 30, "vllm_weight_sync_packed": True})()
+    obj.args = type("Args", (), {"update_weight_buffer_size": 1 << 30})()
     obj.model = []
     obj.weights_getter = lambda: {}
     obj.model_name = "test"
@@ -206,7 +210,8 @@ def test_signature_no_use_vllm(upw):
     sig = inspect.signature(upw.update_weights_from_distributed)
     params = sig.parameters
     assert "use_vllm" not in params
-    for p in ("group_name", "group", "weight_version", "rollout_engines", "converted_named_tensors", "packed"):
+    assert "packed" not in params
+    for p in ("group", "weight_version", "rollout_engines", "converted_named_tensors"):
         assert p in params
 
 
@@ -214,25 +219,23 @@ def test_signature_no_use_vllm(upw):
 def test_signature_rejects_legacy_use_vllm_call(upw):
     with pytest.raises(TypeError, match="use_vllm"):
         upw.update_weights_from_distributed(
-            "g",
             DummyGroup(),
             1,
             [RecordingEngine()],
             _real_tensors(),
             use_vllm=True,
-            packed=False,
         )
 
 
 @pytest.mark.unit
-def test_packed_true_uses_npu_trainer_send_weights(upw, monkeypatch):
+def test_uses_packed_vllm_trainer_send_weights(upw, monkeypatch):
     group = DummyGroup()
     engine = RecordingEngine()
     tensors = _real_tensors()
     seen = []
     _patch_trainer_send(monkeypatch, upw, seen)
 
-    refs = upw.update_weights_from_distributed("groupA", group, 7, [engine], tensors, packed=True)
+    refs = upw.update_weights_from_distributed(group, 7, [engine], tensors)
 
     assert len(seen) == 1
     sent = seen[0]["items"]
@@ -240,35 +243,6 @@ def test_packed_true_uses_npu_trainer_send_weights(upw, monkeypatch):
     assert seen[0]["group"] is group
     assert seen[0]["packed"] is True
     assert refs == ["ref"]
-
-
-@pytest.mark.unit
-def test_packed_false_still_uses_npu_trainer_send_weights(upw, monkeypatch):
-    group = DummyGroup()
-    engine = RecordingEngine()
-    tensors = _real_tensors()
-    seen = []
-    _patch_trainer_send(monkeypatch, upw, seen)
-
-    refs = upw.update_weights_from_distributed("groupB", group, 7, [engine], tensors, packed=False)
-
-    assert len(seen) == 1
-    assert len(seen[0]["items"]) == len(tensors)
-    assert seen[0]["packed"] is False
-    assert refs == ["ref"]
-
-
-@pytest.mark.unit
-def test_default_packed_is_false(upw, monkeypatch):
-    group = DummyGroup()
-    engine = RecordingEngine()
-    seen = []
-    _patch_trainer_send(monkeypatch, upw, seen)
-
-    upw.update_weights_from_distributed("g", group, 1, [engine], _real_tensors())
-
-    assert len(seen) == 1
-    assert seen[0]["packed"] is False
 
 
 @pytest.mark.unit
@@ -286,50 +260,32 @@ def test_no_dist_broadcast_fallback(upw, monkeypatch):
 
     group = DummyGroup()
     engine = RecordingEngine()
-    upw.update_weights_from_distributed("g", group, 1, [engine], _real_tensors(), packed=False)
+    upw.update_weights_from_distributed(group, 1, [engine], _real_tensors())
 
     assert seen_broadcast == []
     assert len(seen_send) == 1
 
 
 @pytest.mark.unit
-def test_remote_kwargs_include_packed_true(upw, monkeypatch):
+def test_remote_kwargs_are_always_packed(upw, monkeypatch):
     group = DummyGroup()
     engine = RecordingEngine()
     tensors = _real_tensors(n=1)
     seen_send = []
     _patch_trainer_send(monkeypatch, upw, seen_send)
 
-    upw.update_weights_from_distributed("myg", group, 42, [engine], tensors, packed=True)
+    upw.update_weights_from_distributed(group, 42, [engine], tensors)
 
     assert len(seen_send) == 1
     assert seen_send[0]["packed"] is True
     assert len(engine.update_weights_from_distributed.calls) == 1
     kw = engine.update_weights_from_distributed.calls[0].kwargs
-    assert kw["packed"] is True
-    assert kw["group_name"] == "myg"
+    assert "packed" not in kw
+    assert "group_name" not in kw
     assert kw["weight_version"] == "42"
     assert kw["names"] == ["layer.0.weight"]
     assert kw["shapes"] == [torch.Size([2, 2])]
     assert kw["dtypes"] == [torch.float32]
-
-
-@pytest.mark.unit
-def test_remote_kwargs_include_packed_false(upw, monkeypatch):
-    group = DummyGroup()
-    engine = RecordingEngine()
-    tensors = _real_tensors(n=2)
-    seen_send = []
-    _patch_trainer_send(monkeypatch, upw, seen_send)
-
-    upw.update_weights_from_distributed("g", group, 99, [engine], tensors, packed=False)
-
-    assert len(seen_send) == 1
-    assert seen_send[0]["packed"] is False
-    kw = engine.update_weights_from_distributed.calls[0].kwargs
-    assert kw["packed"] is False
-    assert kw["weight_version"] == "99"
-    assert kw["names"] == ["layer.0.weight", "layer.1.weight"]
 
 
 @pytest.mark.unit
@@ -339,7 +295,7 @@ def test_remote_kwargs_no_use_vllm(upw, monkeypatch):
     seen_send = []
     _patch_trainer_send(monkeypatch, upw, seen_send)
 
-    upw.update_weights_from_distributed("g", group, 1, [engine], _real_tensors(), packed=False)
+    upw.update_weights_from_distributed(group, 1, [engine], _real_tensors())
 
     assert len(seen_send) == 1
     kw = engine.update_weights_from_distributed.calls[0].kwargs
@@ -353,7 +309,7 @@ def test_multiple_engines_each_get_call(upw, monkeypatch):
     seen_send = []
     _patch_trainer_send(monkeypatch, upw, seen_send)
 
-    upw.update_weights_from_distributed("g", group, 1, engines, _real_tensors(), packed=True)
+    upw.update_weights_from_distributed(group, 1, engines, _real_tensors())
     assert len(seen_send) == 1
     assert seen_send[0]["packed"] is True
     for e in engines:
@@ -367,7 +323,7 @@ def test_empty_tensor_list_still_dispatches(upw, monkeypatch):
     seen_send = []
     _patch_trainer_send(monkeypatch, upw, seen_send)
 
-    refs = upw.update_weights_from_distributed("g", group, 1, [engine], [], packed=False)
+    refs = upw.update_weights_from_distributed(group, 1, [engine], [])
 
     assert refs == ["ref"]
     kw = engine.update_weights_from_distributed.calls[0].kwargs
@@ -375,24 +331,24 @@ def test_empty_tensor_list_still_dispatches(upw, monkeypatch):
     assert kw["shapes"] == []
     assert len(seen_send) == 1
     assert seen_send[0]["items"] == []
+    assert seen_send[0]["packed"] is True
 
 
 @pytest.mark.unit
-def test_raw_packed_path_sends_dense_chunks_only(upw, monkeypatch):
+def test_raw_path_sends_dense_then_expert(upw, monkeypatch):
     obj = _make_instance(upw)
     obj._is_pp_src_rank = True
     obj._group_name = "g"
     obj._hf_weight_iterator = None
-    obj._use_vllm_packed = lambda: True
     obj._iter_non_expert_chunks = lambda: iter([[("dense.0", torch.zeros(1))], [("dense.1", torch.zeros(1))]])
-    obj._iter_expert_chunks = lambda: (_ for _ in ()).throw(AssertionError("expert pass should be skipped"))
+    obj._iter_expert_chunks = lambda: iter([[("expert.0", torch.zeros(1))]])
 
-    seen: list[tuple[list[str], bool, str]] = []
+    seen: list[tuple[list[str], str]] = []
     monkeypatch.setattr(
         upw.UpdateWeightFromDistributed,
         "_update_bucket_weights_from_distributed",
-        lambda self, converted_named_tensors, pbar=None, packed=False: seen.append(
-            ([name for name, _ in converted_named_tensors], packed, pbar)
+        lambda self, converted_named_tensors, pbar=None: seen.append(
+            ([name for name, _ in converted_named_tensors], pbar)
         ),
     )
     monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: None)
@@ -400,43 +356,76 @@ def test_raw_packed_path_sends_dense_chunks_only(upw, monkeypatch):
 
     upw.UpdateWeightFromDistributed._send_weights(obj, pbar="pbar")
 
-    assert seen == [(["dense.0"], True, "pbar"), (["dense.1"], True, "pbar")]
-
-
-@pytest.mark.unit
-def test_raw_nonpacked_path_runs_dense_then_expert(upw, monkeypatch):
-    obj = _make_instance(upw)
-    obj._is_pp_src_rank = True
-    obj._group_name = "g"
-    obj._hf_weight_iterator = None
-    obj._use_vllm_packed = lambda: False
-    obj._iter_non_expert_chunks = lambda: iter([[("dense.0", torch.zeros(1))], [("dense.1", torch.zeros(1))]])
-    obj._iter_expert_chunks = lambda: iter([[("expert.0", torch.zeros(1))]])
-
-    seen: list[tuple[list[str], bool, str]] = []
-    monkeypatch.setattr(
-        upw.UpdateWeightFromDistributed,
-        "_update_bucket_weights_from_distributed",
-        lambda self, converted_named_tensors, pbar=None, packed=False: seen.append(
-            ([name for name, _ in converted_named_tensors], packed, pbar)
-        ),
-    )
-    barriers: list[str] = []
-    monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: barriers.append(kwargs.get("group")))
-    monkeypatch.setattr(upw, "get_gloo_group", lambda: "gloo")
-
-    upw.UpdateWeightFromDistributed._send_weights(obj, pbar="pbar")
-
     assert seen == [
-        (["dense.0"], False, "pbar"),
-        (["dense.1"], False, "pbar"),
-        (["expert.0"], False, "pbar"),
+        (["dense.0"], "pbar"),
+        (["dense.1"], "pbar"),
+        (["expert.0"], "pbar"),
     ]
-    assert barriers == ["gloo", "gloo"]
 
 
 @pytest.mark.unit
-def test_bridge_path_forwards_packed_flag_and_listifies_chunks(upw, monkeypatch):
+def test_source_has_no_packed_mode_switch(upw):
+    src = inspect.getsource(upw)
+    assert "vllm_weight_sync_packed" not in src
+    assert "packed=False" not in src
+
+
+@pytest.mark.unit
+def test_single_ep_converts_without_collective(upw, monkeypatch):
+    obj = _make_instance(upw)
+    tensors = [("expert.0", torch.ones(2)), ("expert.1", torch.ones(3))]
+    collectives = []
+
+    monkeypatch.setattr(upw.mpu, "get_expert_model_parallel_world_size", lambda: 1)
+    monkeypatch.setattr(upw.dist, "all_gather", lambda *args, **kwargs: collectives.append(args))
+    monkeypatch.setattr(
+        upw,
+        "convert_to_hf",
+        lambda args, model_name, name, tensor, quantization_config: [(f"hf.{name}", tensor)],
+    )
+
+    converted = upw.UpdateWeightFromDistributed._ep_gather_and_convert(obj, tensors)
+
+    assert [name for name, _ in converted] == ["hf.expert.0", "hf.expert.1"]
+    assert tensors == []
+    assert collectives == []
+
+
+@pytest.mark.unit
+def test_expert_chunks_keep_each_layer_together(upw, monkeypatch):
+    obj = _make_instance(upw)
+    obj.args.update_weight_buffer_size = 24
+    params = [
+        ("decoder.layers.0.mlp.experts.linear_fc1.weight0", torch.ones(2)),
+        ("decoder.layers.1.mlp.experts.linear_fc1.weight0", torch.ones(2)),
+        ("decoder.layers.0.mlp.experts.linear_fc2.weight0", torch.ones(2)),
+        ("decoder.layers.1.mlp.experts.linear_fc2.weight0", torch.ones(2)),
+    ]
+
+    monkeypatch.setattr(upw, "all_gather_param", lambda name, param: param)
+    monkeypatch.setattr(upw.mpu, "get_expert_model_parallel_world_size", lambda: 1)
+    monkeypatch.setattr(
+        upw,
+        "convert_to_hf",
+        lambda args, model_name, name, tensor, quantization_config: [(name, tensor)],
+    )
+
+    chunks = list(upw.UpdateWeightFromDistributed._iter_expert_chunks(obj, iter(params)))
+
+    assert [[name for name, _ in chunk] for chunk in chunks] == [
+        [
+            "decoder.layers.0.mlp.experts.linear_fc1.weight0",
+            "decoder.layers.0.mlp.experts.linear_fc2.weight0",
+        ],
+        [
+            "decoder.layers.1.mlp.experts.linear_fc1.weight0",
+            "decoder.layers.1.mlp.experts.linear_fc2.weight0",
+        ],
+    ]
+
+
+@pytest.mark.unit
+def test_bridge_path_listifies_chunks(upw, monkeypatch):
     obj = _make_instance(upw)
     obj._is_pp_src_rank = True
     obj._group_name = "g"
@@ -446,29 +435,29 @@ def test_bridge_path_forwards_packed_flag_and_listifies_chunks(upw, monkeypatch)
         ((("bridge.0", torch.zeros(1)),), (("bridge.1", torch.zeros(1)),))
     )
 
-    seen: list[tuple[list[str], bool, str]] = []
+    seen: list[tuple[list[str], str]] = []
     monkeypatch.setattr(
         upw.UpdateWeightFromDistributed,
         "_update_bucket_weights_from_distributed",
-        lambda self, converted_named_tensors, pbar=None, packed=False: seen.append(
-            ([name for name, _ in converted_named_tensors], packed, pbar)
+        lambda self, converted_named_tensors, pbar=None: seen.append(
+            ([name for name, _ in converted_named_tensors], pbar)
         ),
     )
     monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: None)
     monkeypatch.setattr(upw, "get_gloo_group", lambda: "gloo")
 
-    upw.UpdateWeightFromDistributed._sync_bridge_weights_to_rollout_engines(obj, pbar="pbar", use_vllm_packed=True)
+    upw.UpdateWeightFromDistributed._sync_bridge_weights_to_rollout_engines(obj, pbar="pbar")
 
     assert seen == [
-        (["bridge.0"], True, "pbar"),
-        (["bridge.1"], True, "pbar"),
+        (["bridge.0"], "pbar"),
+        (["bridge.1"], "pbar"),
     ]
 
 
 @pytest.mark.unit
 def test_source_no_standalone_use_vllm_param(upw):
     src = inspect.getsource(upw)
-    lines = [line.strip() for line in src.splitlines() if "use_vllm=" in line and "use_vllm_packed" not in line]
+    lines = [line.strip() for line in src.splitlines() if "use_vllm=" in line]
     assert lines == []
 
 
@@ -678,7 +667,6 @@ def test_bridge_export_runs_on_non_source_pp_stage(upw, monkeypatch):
     obj._hf_weight_iterator.get_hf_weight_chunks.return_value = []
     barriers: list[object] = []
 
-    monkeypatch.setattr(upw.UpdateWeightFromDistributed, "_use_vllm_packed", lambda self: True)
     monkeypatch.setattr(upw, "get_gloo_group", lambda: "gloo")
     monkeypatch.setattr(upw.dist, "barrier", lambda *args, **kwargs: barriers.append(kwargs.get("group")))
 
@@ -719,8 +707,9 @@ def test_weight_update_session_calls_start_and_finish(upw, monkeypatch):
 def test_source_wraps_sync_with_weight_update_session(upw):
     src = inspect.getsource(upw.UpdateWeightFromDistributed.update_weights)
     assert "_begin_vllm_weight_update_session" in src
+    assert "start_draft_weight_update" in src
     assert "_end_vllm_weight_update_session" in src
-    assert "_send_weights" in src
+    assert src.count("_send_weights_to_rollout_engines") == 2
 
 
 @pytest.mark.unit
@@ -768,6 +757,150 @@ def test_cuda_sync_once_after_all_buckets_not_per_bucket(upw, monkeypatch):
     sync_src = inspect.getsource(upw.UpdateWeightFromDistributed._send_weights_to_rollout_engines)
     assert "torch.cuda.synchronize" not in send_src
     assert "torch.cuda.synchronize" in sync_src
+
+
+@pytest.fixture
+def weight_modules():
+    module_names = (
+        "megatron",
+        "megatron.core",
+        "megatron.core.parallel_state",
+        "megatron.core.transformer",
+        "megatron.core.transformer.transformer_layer",
+        CONVERTER_MODULE,
+        COMMON_MODULE,
+        DIRECT_MODULE,
+    )
+    saved = _unit_stubs.save_sys_modules(module_names)
+    for name in module_names:
+        sys.modules.pop(name, None)
+    _unit_stubs.install_megatron_mpu_stub()
+    converter = types.ModuleType(CONVERTER_MODULE)
+    converter.convert_to_hf = lambda *args, **kwargs: []
+    sys.modules[CONVERTER_MODULE] = converter
+    try:
+        yield importlib.import_module(COMMON_MODULE), importlib.import_module(DIRECT_MODULE)
+    finally:
+        _unit_stubs.restore_sys_modules(saved)
+
+
+class _Handle:
+    def wait(self) -> None:
+        pass
+
+
+def _param_info(name: str, param: torch.Tensor, src_rank: int = 0) -> ParamInfo:
+    return ParamInfo(name, param.dtype, param.shape, {}, param.nbytes, src_rank)
+
+
+def _tp_param(values, partition_dim: int) -> torch.nn.Parameter:
+    param = torch.nn.Parameter(torch.tensor(values, dtype=torch.float32))
+    param.tensor_model_parallel = True
+    param.partition_dim = partition_dim
+    param.partition_stride = 1
+    return param
+
+
+@pytest.mark.unit
+def test_single_tp_returns_parameter_without_collective(monkeypatch, weight_modules):
+    common, _ = weight_modules
+    parameter = _tp_param([[1.0, 1.0]], partition_dim=0)
+    calls = []
+    monkeypatch.setattr(common.mpu, "get_tensor_model_parallel_world_size", lambda: 1)
+    monkeypatch.setattr(common.mpu, "get_tensor_model_parallel_group", lambda: "tp")
+    monkeypatch.setattr(common.dist, "all_gather", lambda *args, **kwargs: calls.append(args))
+
+    gathered = common.all_gather_param("decoder.weight", parameter)
+
+    assert gathered.data_ptr() == parameter.data_ptr()
+    assert calls == []
+
+
+@pytest.mark.unit
+def test_all_gather_params_coalesces_and_restores_layouts(monkeypatch, weight_modules):
+    common, _ = weight_modules
+    direct = torch.nn.Parameter(torch.tensor([99.0]))
+    direct.tensor_model_parallel = False
+    column = _tp_param([[1.0, 2.0], [3.0, 4.0]], partition_dim=0)
+    glu = _tp_param([[1.0], [2.0], [10.0], [20.0]], partition_dim=0)
+    glu.partition_stride = 2
+    row = _tp_param([[1.0, 2.0], [3.0, 4.0]], partition_dim=0)
+    entries = [
+        (_param_info("dense", direct), direct),
+        (_param_info("linear.weight", column), column),
+        (_param_info("linear_fc1.weight", glu), glu),
+        (_param_info("linear_fc2.weight", row), row),
+    ]
+    remote_flat = torch.cat(
+        [
+            torch.tensor([[5.0, 6.0], [7.0, 8.0]]).flatten(),
+            torch.tensor([[3.0], [4.0], [30.0], [40.0]]).flatten(),
+            torch.tensor([[5.0, 6.0], [7.0, 8.0]]).flatten(),
+        ]
+    )
+    calls = []
+
+    def all_gather_into_tensor(output, local, group, async_op):
+        calls.append((group, async_op))
+        output[: local.numel()].copy_(local)
+        output[local.numel() :].copy_(remote_flat)
+        return _Handle()
+
+    monkeypatch.setattr(common.mpu, "get_tensor_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(common.mpu, "get_tensor_model_parallel_group", lambda: "tp")
+    monkeypatch.setattr(common.dist, "all_gather_into_tensor", all_gather_into_tensor)
+
+    gathered = common.all_gather_params_async(entries)
+
+    assert calls == [("tp", True)]
+    assert gathered[0].data_ptr() == direct.data_ptr()
+    assert torch.equal(gathered[1], torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]))
+    assert torch.equal(gathered[2], torch.tensor([[1.0], [2.0], [3.0], [4.0], [10.0], [20.0], [30.0], [40.0]]))
+    assert torch.equal(gathered[3], torch.tensor([[1.0, 2.0, 5.0, 6.0], [3.0, 4.0, 7.0, 8.0]]))
+
+
+@pytest.mark.unit
+def test_broadcast_expert_params_coalesces_by_source(monkeypatch, weight_modules):
+    _, direct = weight_modules
+    params = [torch.tensor([float(index)]) for index in range(4)]
+    infos = [
+        _param_info("layers.0.experts.0.weight", params[0], src_rank=4),
+        _param_info("layers.0.experts.1.weight", params[1], src_rank=5),
+        _param_info("layers.0.dense.weight", params[2], src_rank=4),
+        _param_info("layers.0.experts.2.weight", params[3], src_rank=9),
+    ]
+    calls = []
+    monkeypatch.setattr(direct.mpu, "get_expert_model_parallel_group", lambda: "ep")
+    monkeypatch.setattr(
+        direct.dist,
+        "_broadcast_coalesced",
+        lambda group, tensors, buffer_size, src: calls.append((group, tensors, buffer_size, src)),
+    )
+
+    direct._broadcast_expert_params(infos, params, 1024, {4: 0, 5: 1, 9: 0})
+
+    assert calls == [
+        ("ep", [params[0], params[3]], 1024, 0),
+        ("ep", [params[1]], 1024, 1),
+    ]
+
+
+@pytest.mark.unit
+def test_ep_broadcast_source_map_tracks_pp_groups(monkeypatch, weight_modules):
+    _, direct = weight_modules
+    monkeypatch.setattr(direct.mpu, "get_expert_model_parallel_group", lambda: "ep")
+    monkeypatch.setattr(direct.mpu, "get_expert_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(direct.mpu, "get_pipeline_model_parallel_group", lambda: "pp")
+    monkeypatch.setattr(direct.dist, "get_process_group_ranks", lambda group: [0, 2] if group == "pp" else [0, 1])
+
+    def all_gather_object(output, local_pp_group, group):
+        assert local_pp_group == [0, 2]
+        assert group == "ep"
+        output[:] = [[0, 2], [1, 3]]
+
+    monkeypatch.setattr(direct.dist, "all_gather_object", all_gather_object)
+
+    assert direct._get_ep_broadcast_src_rank_map() == {0: 0, 2: 0, 1: 1, 3: 1}
 
 
 if __name__ == "__main__":
