@@ -743,7 +743,7 @@ def test_cuda_path_keeps_main_nccl_sender(upw, monkeypatch):
         lambda iterator, args: seen.append((list(iterator), args)),
     )
 
-    refs = upw.update_weights_from_distributed("g", group, 3, [engine], tensors, packed=True)
+    refs = upw.update_weights_from_distributed(group, 3, [engine], tensors)
 
     assert refs == ["ref"]
     assert [name for name, _ in seen[0][0]] == [name for name, _ in tensors]

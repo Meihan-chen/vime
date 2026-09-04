@@ -45,6 +45,7 @@ def _current_gpu_uuid() -> str:
     device_index = torch.cuda.current_device()
     props = torch.cuda.get_device_properties(device_index)
     return str(props.uuid)
+
 _MAX_COLOCATED_UPDATES_INFLIGHT = 4
 
 
@@ -66,7 +67,7 @@ def _build_packed_ipc_update_info(
 
     packed_tensor = torch.cat(byte_tensors)
     _, ipc_args = reduce_tensor(packed_tensor)
-    gpu_uuid = str(torch.cuda.get_device_properties(torch.cuda.current_device()).uuid)
+    gpu_uuid = _current_gpu_uuid()
     return (
         {
             "names": names,

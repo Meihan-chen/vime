@@ -158,11 +158,13 @@ def test_add_vllm_arguments_overrides_router_balance_threshold_defaults(args_mod
 
 
 def _patch_device_config(monkeypatch):
-    """Patch DeviceConfig.__post_init__ to avoid GPU device detection on CPU CI."""
+    """Avoid device detection and third-party plugin loading in parser tests."""
     try:
         from vllm.config.device import DeviceConfig
+        from vllm.engine import arg_utils
 
         monkeypatch.setattr(DeviceConfig, "__post_init__", lambda self: setattr(self, "device_type", "cpu"))
+        monkeypatch.setattr(arg_utils, "load_general_plugins", lambda: None)
     except ImportError:
         pass
 

@@ -531,7 +531,7 @@ def update_weights_from_distributed(
         platform.weight_transfer.distributed_trainer_send_weights(
             named_gpu_iter,
             group=group,
-            packed=packed,
+            packed=True,
         )
         return refs
 

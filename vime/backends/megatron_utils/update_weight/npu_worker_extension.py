@@ -134,11 +134,17 @@ class _NPUVLLMHijack:
             if mlp is None:
                 continue
             experts = getattr(mlp, "experts", None)
-            if experts is None or not hasattr(experts, "weight_loader"):
+            if experts is None:
+                continue
+            # vLLM <= 0.23 keeps the loader on ``experts``.  Since the vLLM
+            # 0.25 MoERunner refactor it lives on ``experts.routed_experts``.
+            loader_owner = getattr(experts, "routed_experts", experts)
+            weight_loader = getattr(loader_owner, "weight_loader", None)
+            if weight_loader is None:
                 continue
             for name, param in mlp.named_parameters():
                 if ("w13_weight" in name or "w2_weight" in name) and not hasattr(param, "weight_loader"):
-                    param.weight_loader = experts.weight_loader  # type: ignore[attr-defined]
+                    param.weight_loader = weight_loader  # type: ignore[attr-defined]
 
     @staticmethod
     def patch_npu_rotary_emb() -> None:
