@@ -147,17 +147,20 @@ def get_batch(
     assert loss_masks.shape == tokens.shape, f"loss_masks.shape: {loss_masks.shape}, tokens.shape: {tokens.shape}"
     batch["full_loss_masks"] = loss_masks
 
-    # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
     if multimodal_train_inputs is not None:
-        multimodal_data = {}  # key -> concatenated tensor
+        multimodal_data = {}
         for mm_input_dict in multimodal_train_inputs:
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
-                    if key not in multimodal_data:
-                        multimodal_data[key] = mm_tensor
-                    else:
-                        multimodal_data[key] = torch.cat([multimodal_data[key], mm_tensor], dim=0)
+                    mm_tensor = torch.atleast_1d(torch.as_tensor(mm_tensor))
+                    if key in multimodal_data:
+                        current = multimodal_data[key]
+                        max_len = max(current.shape[-1], mm_tensor.shape[-1])
+                        mm_tensor = torch.cat(
+                            [F.pad(tensor, (0, max_len - tensor.shape[-1])) for tensor in (current, mm_tensor)]
+                        )
+                    multimodal_data[key] = mm_tensor
         batch["multimodal_train_inputs"] = multimodal_data
 
     return batch
@@ -291,6 +294,9 @@ def log_rollout_data(
                 "num_microbatches",
                 "micro_batch_indices",
                 "source_names",
+                # DP-local view of `raw_reward`, which this loop already logs;
+                # both reduce to the same mean, so skip the duplicate metric.
+                "local_raw_reward",
             ]:
                 continue
             # Emit (sum, count) so gather_log_data can do a weighted average across
@@ -398,7 +404,10 @@ def log_rollout_data(
                 percentile = {f"p{min(math.ceil(q*100),100)}": p for q, p in zip(quantiles, percentile, strict=True)}
                 return percentile
 
-            raw_rewards = rollout_data["raw_reward"]
+            # DP-local, so it lines up positionally with response_lengths /
+            # total_lengths / loss_masks / log_probs below. `raw_reward` itself
+            # is the whole rollout batch (log_passrate needs the full grouping).
+            raw_rewards = rollout_data["local_raw_reward"]
             # Additional metrics for correct cases are calculated separately below.
             correct_response_lengths = []
             correct_total_lengths = []

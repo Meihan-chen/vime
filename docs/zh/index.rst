@@ -41,7 +41,6 @@ vime 构建于 `slime <https://github.com/THUDM/slime>`_ 之上，slime 正是 G
    :caption: Dense
 
    examples/qwen3-4B.md
-   examples/gemma4.md
    examples/glm4-9B.md
 
 .. toctree::
@@ -57,6 +56,7 @@ vime 构建于 `slime <https://github.com/THUDM/slime>`_ 之上，slime 正是 G
    :maxdepth: 1
    :caption: 高级特性
 
+   advanced/on-policy-distillation.md
    advanced/speculative-decoding.md
    advanced/reproducibility.md
    advanced/fault-tolerance.md
@@ -74,6 +74,7 @@ vime 构建于 `slime <https://github.com/THUDM/slime>`_ 之上，slime 正是 G
 
    _examples_synced/fully_async/README.md
    _examples_synced/multi_agent/README.md
+   _examples_synced/coding_agent_rl/README.md
 
 .. toctree::
    :maxdepth: 1
@@ -87,5 +88,3 @@ vime 构建于 `slime <https://github.com/THUDM/slime>`_ 之上，slime 正是 G
 .. toctree::
    :maxdepth: 1
    :caption: 硬件平台
-
-   platform_support/ascend_tutorial.md
