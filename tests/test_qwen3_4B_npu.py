@@ -24,13 +24,7 @@ def execute():
     model_dir = shlex.quote(MODEL_DIR)
     prompt_data = shlex.quote(f"{DATASET_DIR}/dapo-math-17k.jsonl")
 
-    checkpoint_args = (
-        f"--hf-checkpoint {model_dir} "
-        f"--ref-load {model_dir} "
-        f"--load {model_dir} "
-        "--no-load-optim "
-        "--megatron-to-hf-mode bridge "
-    )
+    checkpoint_args = f"--hf-checkpoint {model_dir} --ref-load {model_dir} --load {model_dir} --no-load-optim "
 
     rollout_args = (
         f"--prompt-data {prompt_data} "
@@ -85,7 +79,6 @@ def execute():
 
     vllm_args = (
         "--rollout-num-gpus-per-engine 4 "
-        "--vllm-weight-sync-mode native "
         "--vllm-enable-sleep-mode "
         "--vllm-gpu-memory-utilization 0.6 "
         "--vllm-max-model-len 4096 "

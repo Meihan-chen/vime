@@ -337,7 +337,6 @@ def create_nccl_trainer(
 ):
     import ray
     from vllm.distributed.weight_transfer.factory import WeightTransferTrainerFactory
-    from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerInitInfo
 
     rendezvous = [None]
     if dist.get_rank() == 0:
@@ -347,7 +346,8 @@ def create_nccl_trainer(
     dist.broadcast_object_list(rendezvous, src=0, group=get_gloo_group())
     master_address, master_port = rendezvous[0]
     return WeightTransferTrainerFactory.trainer_init(
-        NCCLTrainerInitInfo(
+        current_platform().weight_transfer.trainer_init_info(
+            colocate=False,
             master_address=master_address,
             master_port=master_port,
             world_size=sum(engine_gpu_counts) + 1,

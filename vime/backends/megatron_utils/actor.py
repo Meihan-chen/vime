@@ -98,6 +98,8 @@ class MegatronTrainRayActor(TrainRayActor):
             self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
                 args, role
             )
+            if args.offload_train:
+                current_platform().megatron.initialize_optimizer_state(self.optimizer)
 
         vpp_size = mpu.get_virtual_pipeline_model_parallel_world_size() or 1
         if vpp_size > 1:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from argparse import Namespace
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -141,7 +141,76 @@ def test_npu_vllm_env_replaces_cuda_and_rocm_visibility(monkeypatch):
     assert "HIP_VISIBLE_DEVICES" not in env
     assert env["ASCEND_RT_VISIBLE_DEVICES"] == "4,5"
     assert env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:False"
-    assert platform.vllm.worker_extension_cls(colocate=True).endswith(".vLLMColocateWorkerExtension")
+
+
+@pytest.mark.parametrize("name,backends", [("cuda", ("nccl", "ipc")), ("npu", ("hccl", "npu_ipc"))])
+def test_weight_transfer_provider_selects_matching_backend_and_init_info(monkeypatch, name, backends):
+    from vime.platforms import get_platform
+
+    plugin_calls = []
+    for colocate, backend in zip((False, True), backends, strict=True):
+        if name == "cuda":
+            module_name = f"vllm.distributed.weight_transfer.{backend}_engine"
+            cls_name = "IPCTrainerInitInfo" if colocate else "NCCLTrainerInitInfo"
+        else:
+            module_name = f"vllm_ascend.distributed.weight_transfer.{backend}_engine"
+            cls_name = "NPUIPCTrainerInitInfo" if colocate else "HCCLTrainerInitInfo"
+        module = ModuleType(module_name)
+        info_cls = type(cls_name, (SimpleNamespace,), {"backend": backend})
+        setattr(module, cls_name, info_cls)
+        monkeypatch.setitem(sys.modules, module_name, module)
+
+        plugins = ModuleType("vllm.plugins")
+        plugins.load_general_plugins = lambda: plugin_calls.append("load")
+        monkeypatch.setitem(sys.modules, "vllm.plugins", plugins)
+        monkeypatch.setitem(sys.modules, "torch_npu", ModuleType("torch_npu"))
+
+        ops = get_platform(name).weight_transfer
+        info = ops.trainer_init_info(colocate=colocate, rank=3, packed=True)
+        assert ops.backend("ipc" if colocate else "nccl") == info.backend == backend
+        assert isinstance(info, info_cls)
+        assert (info.rank, info.packed) == (3, True)
+
+    assert plugin_calls == (["load", "load"] if name == "npu" else [])
+    for backend in ("npu_ipc", "hccl", "custom"):
+        assert ops.backend(backend) == backend
+
+
+@pytest.mark.parametrize("platform", ["cuda", "npu"])
+@pytest.mark.parametrize("chained", [False, True])
+def test_optimizer_state_initialization_reuses_megatron_callback(monkeypatch, platform, chained):
+    monkeypatch.setenv("VIME_PLATFORM", platform)
+    calls = []
+
+    def init_state(optimizer, config):
+        calls.append((optimizer, config))
+
+    optimizers = [
+        SimpleNamespace(optimizer=object(), config=object(), init_state_fn=init_state)
+        for _ in range(2 if chained else 1)
+    ]
+    optimizer = SimpleNamespace(chained_optimizers=optimizers) if chained else optimizers[0]
+
+    current_platform().megatron.initialize_optimizer_state(optimizer)
+
+    expected = [(opt.optimizer, opt.config) for opt in optimizers] if platform == "npu" else []
+    assert calls == expected
+
+
+@pytest.mark.parametrize("empty_optimizer", [False, True])
+def test_npu_optimizer_state_initialization_skips_missing_state_or_optimizer(monkeypatch, empty_optimizer):
+    monkeypatch.setenv("VIME_PLATFORM", "npu")
+
+    def unexpected_init(*args):
+        raise AssertionError("an empty optimizer must not initialize state")
+
+    optimizer = SimpleNamespace(
+        optimizer=None if empty_optimizer else object(),
+        config=object(),
+        init_state_fn=unexpected_init if empty_optimizer else None,
+    )
+
+    current_platform().megatron.initialize_optimizer_state(optimizer)
 
 
 def test_memory_utils_keep_main_cuda_compatibility_surface(monkeypatch):

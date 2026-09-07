@@ -350,31 +350,31 @@ def test_compute_server_args_adds_sleep_mode_for_offload_rollout(vllm_args):
 
 
 @pytest.mark.unit
-def test_compute_server_args_uses_platform_worker_extension_by_default(vllm_args, monkeypatch):
+@pytest.mark.parametrize(
+    "platform_name,colocate,backend",
+    [("cuda", False, "nccl"), ("cuda", True, "ipc"), ("npu", False, "hccl"), ("npu", True, "npu_ipc")],
+)
+def test_compute_server_args_uses_native_platform_backend(vllm_args, monkeypatch, platform_name, colocate, backend):
+    from vime.platforms import get_platform
+
     monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
     vllm_args.vllm_worker_extension_cls = ""
-    calls = []
-    platform = SimpleNamespace(
-        vllm=SimpleNamespace(
-            worker_extension_cls=lambda colocate: calls.append(colocate) or "example.NpuWorkerExtension"
-        )
-    )
-    monkeypatch.setattr(mod, "current_platform", lambda: platform)
+    vllm_args.colocate = colocate
+    monkeypatch.setattr(mod, "current_platform", lambda: get_platform(platform_name))
 
     sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
 
-    assert sa["worker_extension_cls"] == "example.NpuWorkerExtension"
-    assert calls == [False]
+    assert not sa.get("worker_extension_cls")
+    assert sa["weight_transfer_config"] == {"backend": backend}
 
 
 @pytest.mark.unit
 def test_compute_server_args_keeps_user_worker_extension(vllm_args, monkeypatch):
+    from vime.platforms import get_platform
+
     monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
     vllm_args.vllm_worker_extension_cls = "example.UserWorkerExtension"
-    platform = SimpleNamespace(
-        vllm=SimpleNamespace(worker_extension_cls=lambda _colocate: pytest.fail("platform override was called"))
-    )
-    monkeypatch.setattr(mod, "current_platform", lambda: platform)
+    monkeypatch.setattr(mod, "current_platform", lambda: get_platform("npu"))
 
     sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
 

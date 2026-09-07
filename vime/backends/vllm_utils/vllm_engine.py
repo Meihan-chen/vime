@@ -696,6 +696,9 @@ def _compute_server_args(
         kwargs["weight_transfer_config"] = {"backend": "ipc"}
     else:
         kwargs["weight_transfer_config"] = {"backend": "nccl"}
+    kwargs["weight_transfer_config"]["backend"] = current_platform().weight_transfer.backend(
+        kwargs["weight_transfer_config"]["backend"]
+    )
 
     if worker_type == "encoder":
         # vLLM EPD producers have no language-model KV cache groups. Prefix
@@ -733,10 +736,6 @@ def _compute_server_args(
         if "model_path" in vllm_overrides:
             kwargs["model"] = str(vllm_overrides["model_path"])
 
-    if not kwargs.get("worker_extension_cls"):
-        extension_cls = current_platform().vllm.worker_extension_cls(colocate=args.colocate)
-        if extension_cls is not None:
-            kwargs["worker_extension_cls"] = extension_cls
     kwargs["host"] = _wrap_ipv6(kwargs.get("host") or "127.0.0.1")
 
     # vLLM-specific: topology metadata consumed by launch_server_process / _build_subprocess_env.

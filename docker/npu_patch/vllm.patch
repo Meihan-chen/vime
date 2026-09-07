@@ -1,69 +1,165 @@
-diff --git a/vllm/entrypoints/serve/dev/rlhf/api_router.py b/vllm/entrypoints/serve/dev/rlhf/api_router.py
-index 310e4021eb..53f6be09c2 100644
---- a/vllm/entrypoints/serve/dev/rlhf/api_router.py
-+++ b/vllm/entrypoints/serve/dev/rlhf/api_router.py
-@@ -91,6 +91,51 @@ async def resume_generation(raw_request: Request) -> JSONResponse:
-         )
- 
- 
-+@router.post("/abort_requests")
-+async def abort_requests(raw_request: Request) -> JSONResponse:
-+    """Abort in-flight requests without pausing the scheduler.
-+
-+    Empty/missing ``request_ids`` aborts all in-flight requests.
-+    """
-+
-+    engine = engine_client(raw_request)
-+
-+    try:
-+        body = await raw_request.json()
-+    except json.JSONDecodeError as e:
-+        raise HTTPException(status_code=400, detail="Invalid JSON format") from e  # noqa: B904
-+
-+    request_ids = body.get("request_ids")
-+
-+    try:
-+        if request_ids:
-+            # Body ids are external (user-supplied) request ids.
-+            await engine.abort(request_ids)
-+        else:
-+            # The dev RL server runs AsyncLLM; abort everything it is tracking.
-+            # request_states is keyed by internal ids; parent_requests holds
-+            # parallel-sampling parents. Abort both as internal ids.
-+            from vllm.v1.engine.async_llm import AsyncLLM
-+
-+            assert isinstance(engine, AsyncLLM)
-+            op = engine.output_processor
-+            request_ids = [
-+                *op.request_states.keys(),
-+                *op.parent_requests.keys(),
+diff --git a/vllm/distributed/weight_transfer/base.py b/vllm/distributed/weight_transfer/base.py
+index 3fd21101e7..2f26985217 100644
+--- a/vllm/distributed/weight_transfer/base.py
++++ b/vllm/distributed/weight_transfer/base.py
+@@ -169,7 +169,9 @@ class WeightTransferInitRequest:
+ class WeightTransferUpdateRequest:
+     """API-level weight update request."""
+
+-    update_info: dict[str, Any] = field(default_factory=dict)
++    update_info: dict[str, Any] | list[dict[str, Any] | None] = field(
++        default_factory=dict
++    )
+
+
+ class WeightTransferEngine(ABC, Generic[TInitInfo, TUpdateInfo]):
+@@ -391,7 +393,9 @@ class VLLMWeightSyncClient(Protocol):
+
+     def start_weight_update(self) -> None: ...
+
+-    def update_weights(self, update_info: dict[str, Any]) -> None: ...
++    def update_weights(
++        self, update_info: dict[str, Any] | list[dict[str, Any] | None]
++    ) -> None: ...
+
+     def finish_weight_update(self, weight_version: str | None = None) -> None: ...
+
+diff --git a/vllm/distributed/weight_transfer/clients.py b/vllm/distributed/weight_transfer/clients.py
+index 12dd0c9eac..528445fba1 100644
+--- a/vllm/distributed/weight_transfer/clients.py
++++ b/vllm/distributed/weight_transfer/clients.py
+@@ -72,10 +72,18 @@ class HTTPVLLMWeightSyncClient:
+     def start_weight_update(self) -> None:
+         self._post("start_weight_update")
+
+-    def update_weights(self, update_info: dict[str, Any]) -> None:
+-        self._post(
+-            "update_weights", {"update_info": _json_safe_update_info(update_info)}
+-        )
++    def update_weights(
++        self, update_info: dict[str, Any] | list[dict[str, Any] | None]
++    ) -> None:
++        json_update_info: dict[str, Any] | list[dict[str, Any] | None]
++        if isinstance(update_info, list):
++            json_update_info = [
++                _json_safe_update_info(info) if info is not None else None
++                for info in update_info
 +            ]
-+            await engine.abort(request_ids, internal=True)
-+        return JSONResponse(
-+            content={"status": "aborted", "aborted": len(request_ids)},
-+            status_code=HTTPStatus.OK.value,
-+        )
-+    except Exception as err:  # pragma: no cover - defensive
-+        logger.exception("Failed to abort requests")
-+        return JSONResponse(
-+            content={"error": f"Failed to abort requests: {err}"},
-+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value,
-+        )
-+
-+
- @router.get("/is_paused")
- async def is_paused(raw_request: Request) -> JSONResponse:
-     """Return the current pause status."""
-diff --git a/vllm/v1/core/sched/async_scheduler.py b/vllm/v1/core/sched/async_scheduler.py
-index d1c652c46e..cb1583b7cb 100644
---- a/vllm/v1/core/sched/async_scheduler.py
-+++ b/vllm/v1/core/sched/async_scheduler.py
-@@ -65,7 +65,7 @@ class AsyncScheduler(Scheduler):
- 
-         # Update the number of output placeholders.
-         request.num_output_placeholders -= len(new_token_ids)
--        assert request.num_output_placeholders >= 0
-+        request.num_output_placeholders = max(0, request.num_output_placeholders)
- 
-         # Cache the new tokens. Preempted requests should be skipped.
-         if status_before_update == RequestStatus.RUNNING:
++        else:
++            json_update_info = _json_safe_update_info(update_info)
++        self._post("update_weights", {"update_info": json_update_info})
+
+     def finish_weight_update(self, weight_version: str | None = None) -> None:
+         json = (
+@@ -105,7 +113,9 @@ class RayVLLMWeightSyncClient:
+
+         ray.get([h.start_weight_update.remote() for h in self.handles])
+
+-    def update_weights(self, update_info: dict[str, Any]) -> None:
++    def update_weights(
++        self, update_info: dict[str, Any] | list[dict[str, Any] | None]
++    ) -> None:
+         import ray
+
+         request = WeightTransferUpdateRequest(update_info=update_info)
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+index 8dad837613..b448518525 100644
+--- a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
+@@ -227,6 +227,7 @@ class GenerateStreamResponse(BaseModel):
+     )
+     choices: list[GenerateResponseStreamChoice]
+     usage: UsageInfo | None = Field(default=None)
++    weight_version: str | None = None
+
+
+ class GenerateResponse(BaseModel):
+@@ -242,6 +243,7 @@ class GenerateResponse(BaseModel):
+     created: int | None = None
+     choices: list[GenerateResponseChoice]
+     usage: UsageInfo | None = Field(default=None)
++    weight_version: str | None = None
+     prompt_logprobs: list[dict[int, Logprob] | None] | None = None
+
+     kv_transfer_params: dict[str, Any] | None = Field(
+diff --git a/vllm/entrypoints/scale_out/token_in_token_out/serving.py b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+index 34e9eaeb12..52dd65a7b5 100644
+--- a/vllm/entrypoints/scale_out/token_in_token_out/serving.py
++++ b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
+@@ -227,6 +227,7 @@ class ServingTokens(GenerateBaseServing):
+         )
+
+         assert result_generator is not None
++        weight_version = await self.engine_client.get_weight_version()
+
+         if request.stream:
+             return self.serve_tokens_stream_generator(
+@@ -235,10 +236,16 @@ class ServingTokens(GenerateBaseServing):
+                 request_id,
+                 model_name,
+                 request_metadata,
++                weight_version,
+             )
+
+         return await self.serve_tokens_full_generator(
+-            request, result_generator, request_id, model_name, request_metadata
++            request,
++            result_generator,
++            request_id,
++            model_name,
++            request_metadata,
++            weight_version,
+         )
+
+     async def serve_tokens_full_generator(
+@@ -248,6 +255,7 @@ class ServingTokens(GenerateBaseServing):
+         request_id: str,
+         model_name: str,
+         request_metadata: RequestResponseMetadata,
++        weight_version: str | None,
+     ) -> ErrorResponse | GenerateResponse:
+         created_time = int(time.time())
+         final_res: RequestOutput | None = None
+@@ -328,6 +336,7 @@ class ServingTokens(GenerateBaseServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            weight_version=weight_version,
+             prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
+             kv_transfer_params=final_res.kv_transfer_params,
+             ec_transfer_params=final_res.ec_transfer_params,
+@@ -361,6 +370,7 @@ class ServingTokens(GenerateBaseServing):
+         request_id: str,
+         model_name: str,
+         request_metadata: RequestResponseMetadata,
++        weight_version: str | None,
+     ) -> AsyncGenerator[str, None]:
+         num_prompt_tokens = 0
+         num_generated_tokens: list[int] = []
+@@ -415,6 +425,7 @@ class ServingTokens(GenerateBaseServing):
+
+                     chunk = GenerateStreamResponse(
+                         request_id=request_id,
++                        weight_version=weight_version,
+                         choices=[
+                             GenerateResponseStreamChoice(
+                                 index=i,
+@@ -449,6 +460,7 @@ class ServingTokens(GenerateBaseServing):
+             if include_usage:
+                 final_chunk = GenerateStreamResponse(
+                     request_id=request_id,
++                    weight_version=weight_version,
+                     choices=[],
+                     usage=final_usage_info,
+                 )
+diff --git a/vllm/model_executor/model_loader/reload/meta.py b/vllm/model_executor/model_loader/reload/meta.py
+index 213a9aaeaf..4d4cfee641 100644
+--- a/vllm/model_executor/model_loader/reload/meta.py
++++ b/vllm/model_executor/model_loader/reload/meta.py
+@@ -30,5 +30,6 @@ SKIP_LOAD_TENSORS: set[str] = {
+     "expert_global_to_physical",
+     "expert_physical_to_global",
+     "expert_local_to_global",
++    "expert_ids_per_ep_rank",
+     "e_score_correction_bias",
+ }

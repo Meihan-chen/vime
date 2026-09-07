@@ -132,26 +132,25 @@ class NpuWeightTransferPlatformOps(WeightTransferPlatformOps):
 
         return npu_generate_uuid()
 
-    def distributed_trainer_init(self, init_info):
+    def backend(self, backend: str) -> str:
+        return {"ipc": "npu_ipc", "nccl": "hccl"}.get(backend, backend)
+
+    def trainer_init_info(self, *, colocate: bool, **kwargs):
         _ensure_torch_npu()
-        from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLWeightTransferEngine
+        from vllm.plugins import load_general_plugins
 
-        return HCCLWeightTransferEngine.trainer_init(init_info)
+        # Trainers, unlike vLLM workers, may not have loaded general plugins yet.
+        load_general_plugins()
+        if colocate:
+            from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import NPUIPCTrainerInitInfo
 
-    def distributed_trainer_send_weights(self, named_tensors, *, group, packed: bool) -> None:
-        _ensure_torch_npu()
-        from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLWeightTransferEngine
+            return NPUIPCTrainerInitInfo(**kwargs)
+        from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLTrainerInitInfo
 
-        HCCLWeightTransferEngine.trainer_send_weights(
-            iter(named_tensors),
-            {"group": group, "packed": packed},
-        )
+        return HCCLTrainerInitInfo(**kwargs)
 
 
 class NpuVLLMLaunchPlatformOps(VLLMLaunchPlatformOps):
-    _COLOCATE_EXTENSION = "vime.backends.megatron_utils.update_weight.npu_worker_extension.vLLMColocateWorkerExtension"
-    _GENERAL_EXTENSION = "vime.backends.megatron_utils.update_weight.npu_worker_extension.vLLMWorkerExtension"
-
     def subprocess_env(self, base_env, *, visible_devices: str, colocate: bool) -> dict[str, str]:
         env = dict(base_env)
         env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
@@ -165,9 +164,6 @@ class NpuVLLMLaunchPlatformOps(VLLMLaunchPlatformOps):
         if colocate:
             env["PYTORCH_NPU_ALLOC_CONF"] = "expandable_segments:False"
         return env
-
-    def worker_extension_cls(self, colocate: bool) -> str | None:
-        return self._COLOCATE_EXTENSION if colocate else self._GENERAL_EXTENSION
 
 
 class NpuTrainingBootstrap(TrainingBootstrap):
@@ -211,6 +207,12 @@ class NpuTrainingBootstrap(TrainingBootstrap):
         from torch_memory_saver import torch_memory_saver
 
         return torch_memory_saver.region(tag="training", enable_cpu_backup=True)
+
+    def initialize_optimizer_state(self, optimizer: Any) -> None:
+        """Create lazy optimizer state before leaving the training memory pool."""
+        for opt in getattr(optimizer, "chained_optimizers", [optimizer]):
+            if opt.optimizer is not None and opt.init_state_fn is not None:
+                opt.init_state_fn(opt.optimizer, opt.config)
 
 
 class NpuCheckpointCapabilities(CheckpointCapabilities):

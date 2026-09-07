@@ -24,13 +24,7 @@ def execute():
     model_dir = shlex.quote(MODEL_DIR)
     prompt_data = shlex.quote(f"{DATASET_DIR}/dapo-math-17k.jsonl")
 
-    checkpoint_args = (
-        f"--hf-checkpoint {model_dir} "
-        f"--load {model_dir} "
-        f"--ref-load {model_dir} "
-        "--megatron-to-hf-mode bridge "
-        "--no-load-optim "
-    )
+    checkpoint_args = f"--hf-checkpoint {model_dir} --load {model_dir} --ref-load {model_dir} --no-load-optim "
 
     rollout_args = (
         f"--prompt-data {prompt_data} "

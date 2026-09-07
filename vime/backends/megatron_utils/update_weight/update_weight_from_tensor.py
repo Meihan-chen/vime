@@ -198,11 +198,11 @@ class UpdateWeightFromTensor:
         if not self._expert_transfer_plan:
             if self.rollout_engines:
                 from vllm.distributed.weight_transfer.factory import WeightTransferTrainerFactory
-                from vllm.distributed.weight_transfer.ipc_engine import IPCTrainerInitInfo
 
                 client = VimeRayWeightSyncClient(self.rollout_engines, lambda: self.weight_version)
                 trainer = WeightTransferTrainerFactory.trainer_init(
-                    IPCTrainerInitInfo(
+                    current_platform().weight_transfer.trainer_init_info(
+                        colocate=True,
                         rank=dist.get_rank(),
                         packed=True,
                         packed_buffer_size_bytes=_native_ipc_buffer_size(

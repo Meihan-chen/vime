@@ -72,7 +72,19 @@ class RayResourceSpec:
 
 
 class WeightTransferPlatformOps:
-    """NPU-only weight-transfer operations not handled by MindSpeed."""
+    """Select vendor backends without changing the shared trainer lifecycle."""
+
+    def backend(self, backend: str) -> str:
+        return backend
+
+    def trainer_init_info(self, *, colocate: bool, **kwargs):
+        if colocate:
+            from vllm.distributed.weight_transfer.ipc_engine import IPCTrainerInitInfo
+
+            return IPCTrainerInitInfo(**kwargs)
+        from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerInitInfo
+
+        return NCCLTrainerInitInfo(**kwargs)
 
 
 class VLLMLaunchPlatformOps:
@@ -86,9 +98,6 @@ class VLLMLaunchPlatformOps:
         colocate: bool,
     ) -> dict[str, str]:
         return dict(base_env)
-
-    def worker_extension_cls(self, colocate: bool) -> str | None:
-        return None
 
 
 class TrainingBootstrap:
@@ -105,6 +114,9 @@ class TrainingBootstrap:
 
     def training_context(self, offload_train: bool):
         return nullcontext()
+
+    def initialize_optimizer_state(self, optimizer: Any) -> None:
+        return None
 
 
 @dataclass(frozen=True)
