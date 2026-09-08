@@ -80,6 +80,7 @@ def execute():
     )
 
     vllm_args = (
+        '--vllm-additional-config \'{"weight_nz_mode":0}\' '
         "--rollout-num-gpus-per-engine 1 "
         "--vllm-gpu-memory-utilization 0.7 "
         "--vllm-max-model-len 16384 "

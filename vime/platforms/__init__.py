@@ -54,6 +54,13 @@ def current_platform() -> Platform:
     """Resolve the active platform without probing hardware at module import."""
     raw_override = os.environ.get("VIME_PLATFORM")
     override = raw_override.strip().lower() if raw_override and raw_override.strip() else None
+    accelerator_override = os.environ.get("VIME_ACCELERATOR", "").strip().lower()
+    if accelerator_override in {"npu", "cuda", "musa"}:
+        accelerator_platform = "npu" if accelerator_override == "npu" else "cuda"
+        if override in _PLATFORM_FACTORIES and override != accelerator_platform:
+            raise ValueError(f"Conflicting VIME_PLATFORM={override!r} and VIME_ACCELERATOR={accelerator_override!r}")
+        if override is None:
+            override = accelerator_platform
     return _resolve_platform(override)
 
 

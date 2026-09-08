@@ -213,17 +213,22 @@ def test_npu_optimizer_state_initialization_skips_missing_state_or_optimizer(mon
     current_platform().megatron.initialize_optimizer_state(optimizer)
 
 
-def test_memory_utils_keep_main_cuda_compatibility_surface(monkeypatch):
+@pytest.mark.parametrize("platform", ["cuda", "npu"])
+def test_eval_only_has_no_optimizer_state_to_initialize(monkeypatch, platform):
+    monkeypatch.setenv("VIME_PLATFORM", platform)
+    current_platform().megatron.initialize_optimizer_state(None)
+
+
+def test_memory_utils_keep_main_accelerator_surface(monkeypatch):
     from vime.utils import memory_utils
 
     calls = []
-    fake_torch = SimpleNamespace(
-        cuda=SimpleNamespace(
-            synchronize=lambda: calls.append("synchronize"),
-            empty_cache=lambda: calls.append("empty_cache"),
-        ),
-        _C=SimpleNamespace(_host_emptyCache=lambda: calls.append("empty_host_cache")),
+    fake_accelerator = SimpleNamespace(
+        synchronize=lambda: calls.append("synchronize"),
+        empty_cache=lambda: calls.append("empty_cache"),
     )
+    fake_torch = SimpleNamespace(_C=SimpleNamespace(_host_emptyCache=lambda: calls.append("empty_host_cache")))
+    monkeypatch.setattr(memory_utils, "accelerator", fake_accelerator)
     monkeypatch.setattr(memory_utils, "torch", fake_torch)
     monkeypatch.setattr(memory_utils.gc, "collect", lambda: calls.append("gc"))
 

@@ -171,8 +171,9 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
     ray_ops.actor_options.assert_called_once_with(0.4)
 
 
-def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch):
-    from vime.ray import rollout as rollout_module
+@pytest.mark.parametrize("is_npu", [False, True])
+def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_npu):
+    from vime.backends.vllm_utils import engine_group as rollout_module
 
     runtime_env_inputs = []
     ray_ops = SimpleNamespace(
@@ -180,8 +181,7 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch):
         or {**env, "PLATFORM_ENV": "rollout"},
         actor_options=Mock(side_effect=lambda fraction: {"resources": {"ACCEL": fraction}}),
     )
-    monkeypatch.setattr(rollout_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=True))
-    monkeypatch.setattr(rollout_module, "validate_server_group_gpu_indices", lambda **_kwargs: None)
+    monkeypatch.setattr(rollout_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=is_npu))
 
     actor_options = []
 
@@ -223,11 +223,24 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch):
 
     assert handles == ["init-ref"]
     assert cursors == {0: 15001}
-    assert runtime_env_inputs[0][0] is args
-    assert actor_options[0]["runtime_env"]["env_vars"]["PLATFORM_ENV"] == "rollout"
-    assert actor_options[0]["resources"] == {"ACCEL": 0.2}
-    assert actor_options[0]["num_gpus"] == 0
-    ray_ops.actor_options.assert_called_once_with(0.2)
+    if is_npu:
+        assert runtime_env_inputs[0][0] is args
+        assert actor_options[0]["runtime_env"]["env_vars"]["PLATFORM_ENV"] == "rollout"
+        assert actor_options[0]["resources"] == {"ACCEL": 0.2}
+        assert actor_options[0]["num_gpus"] == 0
+        ray_ops.actor_options.assert_called_once_with(0.2)
+    else:
+        assert runtime_env_inputs == []
+        assert "resources" not in actor_options[0]
+        assert "PLATFORM_ENV" not in actor_options[0]["runtime_env"]["env_vars"]
+        assert actor_options[0]["num_gpus"] == 0.2
+        ray_ops.actor_options.assert_not_called()
+
+    # The main placement check must still run before an invalid slot is used.
+    group.all_engines = [None]
+    group.gpu_offset = 1
+    with pytest.raises(ValueError, match="Invalid rollout server group GPU placement"):
+        group.start_engines()
 
 
 def test_train_actor_uses_npu_local_device_mapping(monkeypatch):
@@ -253,6 +266,9 @@ def test_train_actor_keeps_main_cuda_local_device_mapping(monkeypatch):
         lambda: _fake_platform(SimpleNamespace(), is_npu=False),
     )
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7,3")
+    monkeypatch.setattr(
+        train_actor_module.accelerator, "_ACCELERATOR", train_actor_module.accelerator.CUDAAccelerator()
+    )
     monkeypatch.setattr(train_actor_module.ray, "get_gpu_ids", lambda: ["3"])
 
     assert train_actor_module.get_local_gpu_id() == 1

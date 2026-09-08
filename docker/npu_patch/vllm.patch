@@ -1,92 +1,38 @@
-diff --git a/vllm/distributed/weight_transfer/base.py b/vllm/distributed/weight_transfer/base.py
-index 3fd21101e7..2f26985217 100644
---- a/vllm/distributed/weight_transfer/base.py
-+++ b/vllm/distributed/weight_transfer/base.py
-@@ -169,7 +169,9 @@ class WeightTransferInitRequest:
- class WeightTransferUpdateRequest:
-     """API-level weight update request."""
-
--    update_info: dict[str, Any] = field(default_factory=dict)
-+    update_info: dict[str, Any] | list[dict[str, Any] | None] = field(
-+        default_factory=dict
-+    )
-
-
- class WeightTransferEngine(ABC, Generic[TInitInfo, TUpdateInfo]):
-@@ -391,7 +393,9 @@ class VLLMWeightSyncClient(Protocol):
-
-     def start_weight_update(self) -> None: ...
-
--    def update_weights(self, update_info: dict[str, Any]) -> None: ...
-+    def update_weights(
-+        self, update_info: dict[str, Any] | list[dict[str, Any] | None]
-+    ) -> None: ...
-
-     def finish_weight_update(self, weight_version: str | None = None) -> None: ...
-
-diff --git a/vllm/distributed/weight_transfer/clients.py b/vllm/distributed/weight_transfer/clients.py
-index 12dd0c9eac..528445fba1 100644
---- a/vllm/distributed/weight_transfer/clients.py
-+++ b/vllm/distributed/weight_transfer/clients.py
-@@ -72,10 +72,18 @@ class HTTPVLLMWeightSyncClient:
-     def start_weight_update(self) -> None:
-         self._post("start_weight_update")
-
--    def update_weights(self, update_info: dict[str, Any]) -> None:
--        self._post(
--            "update_weights", {"update_info": _json_safe_update_info(update_info)}
--        )
-+    def update_weights(
-+        self, update_info: dict[str, Any] | list[dict[str, Any] | None]
-+    ) -> None:
-+        json_update_info: dict[str, Any] | list[dict[str, Any] | None]
-+        if isinstance(update_info, list):
-+            json_update_info = [
-+                _json_safe_update_info(info) if info is not None else None
-+                for info in update_info
-+            ]
-+        else:
-+            json_update_info = _json_safe_update_info(update_info)
-+        self._post("update_weights", {"update_info": json_update_info})
-
-     def finish_weight_update(self, weight_version: str | None = None) -> None:
-         json = (
-@@ -105,7 +113,9 @@ class RayVLLMWeightSyncClient:
-
-         ray.get([h.start_weight_update.remote() for h in self.handles])
-
--    def update_weights(self, update_info: dict[str, Any]) -> None:
-+    def update_weights(
-+        self, update_info: dict[str, Any] | list[dict[str, Any] | None]
-+    ) -> None:
-         import ray
-
-         request = WeightTransferUpdateRequest(update_info=update_info)
 diff --git a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
-index 8dad837613..b448518525 100644
+index f304bf677b..71a17e9363 100644
 --- a/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
 +++ b/vllm/entrypoints/scale_out/token_in_token_out/protocol.py
-@@ -227,6 +227,7 @@ class GenerateStreamResponse(BaseModel):
+@@ -240,6 +240,8 @@ class GenerateStreamResponse(BaseModel):
      )
      choices: list[GenerateResponseStreamChoice]
      usage: UsageInfo | None = Field(default=None)
 +    weight_version: str | None = None
++    request_spec_decode_stats: dict[str, Any] | None = Field(default=None)
 
 
  class GenerateResponse(BaseModel):
-@@ -242,6 +243,7 @@ class GenerateResponse(BaseModel):
+@@ -255,6 +257,8 @@ class GenerateResponse(BaseModel):
      created: int | None = None
      choices: list[GenerateResponseChoice]
      usage: UsageInfo | None = Field(default=None)
 +    weight_version: str | None = None
++    request_spec_decode_stats: dict[str, Any] | None = Field(default=None)
      prompt_logprobs: list[dict[int, Logprob] | None] | None = None
 
      kv_transfer_params: dict[str, Any] | None = Field(
 diff --git a/vllm/entrypoints/scale_out/token_in_token_out/serving.py b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
-index 34e9eaeb12..52dd65a7b5 100644
+index bbbd85137c..809f1a66ea 100644
 --- a/vllm/entrypoints/scale_out/token_in_token_out/serving.py
 +++ b/vllm/entrypoints/scale_out/token_in_token_out/serving.py
-@@ -227,6 +227,7 @@ class ServingTokens(GenerateBaseServing):
+@@ -14,6 +14,7 @@ from vllm.engine.protocol import EngineClient
+ from vllm.entrypoints.chat_utils import AsyncMultiModalItemTracker
+ from vllm.entrypoints.generate.base.serving import (
+     GenerateBaseServing,
++    build_spec_decoding_metrics,
+     clamp_prompt_logprobs,
+ )
+ from vllm.entrypoints.openai.chat_completion.protocol import (
+@@ -261,6 +262,7 @@ class ServingTokens(GenerateBaseServing):
          )
 
          assert result_generator is not None
@@ -94,7 +40,7 @@ index 34e9eaeb12..52dd65a7b5 100644
 
          if request.stream:
              return self.serve_tokens_stream_generator(
-@@ -235,10 +236,16 @@ class ServingTokens(GenerateBaseServing):
+@@ -269,10 +271,16 @@ class ServingTokens(GenerateBaseServing):
                  request_id,
                  model_name,
                  request_metadata,
@@ -112,7 +58,7 @@ index 34e9eaeb12..52dd65a7b5 100644
          )
 
      async def serve_tokens_full_generator(
-@@ -248,6 +255,7 @@ class ServingTokens(GenerateBaseServing):
+@@ -282,6 +290,7 @@ class ServingTokens(GenerateBaseServing):
          request_id: str,
          model_name: str,
          request_metadata: RequestResponseMetadata,
@@ -120,15 +66,28 @@ index 34e9eaeb12..52dd65a7b5 100644
      ) -> ErrorResponse | GenerateResponse:
          created_time = int(time.time())
          final_res: RequestOutput | None = None
-@@ -328,6 +336,7 @@ class ServingTokens(GenerateBaseServing):
+@@ -355,6 +364,11 @@ class ServingTokens(GenerateBaseServing):
+                 cached_tokens=final_res.num_cached_tokens
+             )
+
++        spec_decode_metrics = build_spec_decoding_metrics(final_res)
++        request_spec_decode_stats = (
++            spec_decode_metrics.model_dump() if spec_decode_metrics else None
++        )
++
+         request_metadata.final_usage_info = usage
+
+         response = GenerateResponse(
+@@ -363,6 +377,8 @@ class ServingTokens(GenerateBaseServing):
              model=model_name,
              choices=choices,
              usage=usage,
 +            weight_version=weight_version,
++            request_spec_decode_stats=request_spec_decode_stats,
              prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
              kv_transfer_params=final_res.kv_transfer_params,
              ec_transfer_params=final_res.ec_transfer_params,
-@@ -361,6 +370,7 @@ class ServingTokens(GenerateBaseServing):
+@@ -396,11 +412,13 @@ class ServingTokens(GenerateBaseServing):
          request_id: str,
          model_name: str,
          request_metadata: RequestResponseMetadata,
@@ -136,24 +95,42 @@ index 34e9eaeb12..52dd65a7b5 100644
      ) -> AsyncGenerator[str, None]:
          num_prompt_tokens = 0
          num_generated_tokens: list[int] = []
-@@ -415,6 +425,7 @@ class ServingTokens(GenerateBaseServing):
+         first_iteration = True
+         num_cached_tokens = None
++        request_spec_decode_stats: dict[str, object] | None = None
+         sampling_params: SamplingParams = request.sampling_params
+
+         include_usage, include_continuous_usage = should_include_usage(
+@@ -409,6 +427,9 @@ class ServingTokens(GenerateBaseServing):
+
+         try:
+             async for res in result_generator:
++                spec_decode_metrics = build_spec_decoding_metrics(res)
++                if spec_decode_metrics is not None:
++                    request_spec_decode_stats = spec_decode_metrics.model_dump()
+                 if first_iteration:
+                     if res.prompt_token_ids is not None:
+                         num_prompt_tokens = len(res.prompt_token_ids)
+@@ -448,6 +469,8 @@ class ServingTokens(GenerateBaseServing):
 
                      chunk = GenerateStreamResponse(
                          request_id=request_id,
 +                        weight_version=weight_version,
++                        request_spec_decode_stats=request_spec_decode_stats,
                          choices=[
                              GenerateResponseStreamChoice(
                                  index=i,
-@@ -449,6 +460,7 @@ class ServingTokens(GenerateBaseServing):
+@@ -482,6 +505,8 @@ class ServingTokens(GenerateBaseServing):
              if include_usage:
                  final_chunk = GenerateStreamResponse(
                      request_id=request_id,
 +                    weight_version=weight_version,
++                    request_spec_decode_stats=request_spec_decode_stats,
                      choices=[],
                      usage=final_usage_info,
                  )
 diff --git a/vllm/model_executor/model_loader/reload/meta.py b/vllm/model_executor/model_loader/reload/meta.py
-index 213a9aaeaf..4d4cfee641 100644
+index a8f8023cf2..d62f39a2b8 100644
 --- a/vllm/model_executor/model_loader/reload/meta.py
 +++ b/vllm/model_executor/model_loader/reload/meta.py
 @@ -30,5 +30,6 @@ SKIP_LOAD_TENSORS: set[str] = {

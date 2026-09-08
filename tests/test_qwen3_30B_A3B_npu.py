@@ -81,6 +81,7 @@ def execute():
     )
 
     vllm_args = (
+        '--vllm-additional-config \'{"weight_nz_mode":0}\' '
         "--rollout-num-gpus-per-engine 4 "
         "--vllm-enable-sleep-mode "
         "--vllm-enable-expert-parallel "
