@@ -5,9 +5,9 @@ from vime.platforms import current_platform
 if current_platform().is_npu:
     import vime.backends.megatron_utils  # noqa: F401
 
+from vime.observability.logging_utils import configure_logger, finish_tracking, init_tracking
 from vime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from vime.utils.arguments import parse_args
-from vime.utils.logging_utils import configure_logger, finish_tracking, init_tracking
 from vime.utils.misc import should_run_periodic_action
 
 
