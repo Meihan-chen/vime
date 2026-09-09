@@ -7,6 +7,7 @@ import logging
 import os
 from contextlib import nullcontext
 from glob import glob
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,55 @@ def _prioritize_fla_npu_opp() -> None:
     os.environ["ASCEND_CUSTOM_OPP_PATH"] = os.pathsep.join(dict.fromkeys([*roots, *paths]))
 
 
+def _isolate_fla_npu_for_vllm(env: dict[str, str]) -> None:
+    # Ray env_vars are overrides, not a replacement for the inherited job env.
+    inherited = {**os.environ, **env}
+    fla_path = inherited.get("FLA_NPU_OPP_PATH")
+    fla_lib = inherited.get("FLA_NPU_OP_API_LIB")
+    if not (fla_path or fla_lib):
+        return
+
+    vendor = (Path(fla_lib).parents[2] if fla_lib else Path(fla_path)).expanduser().resolve()
+    if (vendor / "vendors" / "fla_npu_transformer").is_dir():
+        vendor = vendor / "vendors" / "fla_npu_transformer"
+    opp_root = vendor.parent.parent if vendor.parent.name == "vendors" else None
+
+    def without_fla(value: str, *, opp: bool = False) -> str:
+        paths = []
+        for entry in value.split(os.pathsep):
+            if not entry:
+                continue
+            path = Path(entry).expanduser().resolve()
+            if path.is_relative_to(vendor):
+                continue
+            if opp and opp_root is not None and path in (opp_root, vendor.parent):
+                # A shared external OPP root may also contain unrelated vendors.
+                paths.extend(
+                    str(other) for other in sorted(vendor.parent.iterdir())
+                    if other.is_dir() and not other.resolve().is_relative_to(vendor)
+                )
+            else:
+                paths.append(entry)
+        return os.pathsep.join(dict.fromkeys(paths))
+
+    # Locate the installed serving OPP without importing either operator package.
+    spec = find_spec("vllm_ascend")
+    if spec is None or spec.origin is None:
+        raise RuntimeError("FLA/serving isolation requires the installed vllm_ascend package")
+    serving = Path(spec.origin).resolve().parent / "_cann_ops_custom" / "vendors" / "custom_transformer"
+    if not serving.is_dir():
+        raise RuntimeError(f"Serving custom OPP not found: {serving}")
+    other_opp = without_fla(inherited.get("ASCEND_CUSTOM_OPP_PATH", ""), opp=True)
+    env["ASCEND_CUSTOM_OPP_PATH"] = os.pathsep.join(dict.fromkeys(filter(None, [str(serving), *other_opp.split(os.pathsep)])))
+    env["LD_LIBRARY_PATH"] = without_fla(inherited.get("LD_LIBRARY_PATH", ""))
+    if inherited.get("LD_PRELOAD"):
+        env["LD_PRELOAD"] = without_fla(inherited["LD_PRELOAD"].replace(" ", os.pathsep))
+    # Explicitly mask parent values; omitting keys would let Ray inherit them.
+    env["FLA_NPU_OPP_PATH"] = ""
+    env["FLA_NPU_OP_API_LIB"] = ""
+    env["OMP_NUM_THREADS"] = "1"
+
+
 def _install_safe_empty_cache() -> None:
     """Preserve the Ascend allocator guard required by MindSpeed/TMS callers."""
     torch = importlib.import_module("torch")
@@ -166,6 +216,7 @@ class NpuRayResourceSpec(RayResourceSpec):
 
     def rollout_runtime_env(self, args: Any, env_vars=None) -> dict[str, str]:
         env = dict(env_vars or {})
+        _isolate_fla_npu_for_vllm(env)
         cann_python_path = _cann_python_site_packages()
         if cann_python_path is not None:
             _prepend_pythonpath(env, cann_python_path)
@@ -204,11 +255,14 @@ class NpuWeightTransferPlatformOps(WeightTransferPlatformOps):
 class NpuVLLMLaunchPlatformOps(VLLMLaunchPlatformOps):
     def subprocess_env(self, base_env, *, visible_devices: str, colocate: bool) -> dict[str, str]:
         env = dict(base_env)
+        _isolate_fla_npu_for_vllm(env)
         env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
         env.pop("CUDA_VISIBLE_DEVICES", None)
         env.pop("HIP_VISIBLE_DEVICES", None)
         env["ASCEND_RT_VISIBLE_DEVICES"] = visible_devices
         env["VLLM_USE_AOT_COMPILE"] = "0"
+        # vLLM selects its TP worker context independently of the server's spawn.
+        env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
         cann_python_path = _cann_python_site_packages()
         if cann_python_path is not None:
             _prepend_pythonpath(env, cann_python_path)
