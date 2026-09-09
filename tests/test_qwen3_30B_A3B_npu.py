@@ -12,7 +12,7 @@ MODEL_DIR = f"{TEST_ROOT}/models/Qwen3-30B-A3B"
 DATASET_DIR = f"{TEST_ROOT}/datasets/dapo-math-17k"
 
 
-def prepare(torch_dist_ref_load=False):
+def prepare(torch_dist_ref_load=True):
     models_dir = shlex.quote(f"{TEST_ROOT}/models")
     datasets_dir = shlex.quote(f"{TEST_ROOT}/datasets")
     model_dir = shlex.quote(MODEL_DIR)
@@ -159,7 +159,7 @@ def execute(torch_dist_checkpoint=None):
 
 
 def main():
-    checkpoint = prepare(torch_dist_ref_load=os.environ.get("VIME_TEST_TORCH_DIST_REF_LOAD") == "1")
+    checkpoint = prepare(torch_dist_ref_load=os.environ.get("VIME_TEST_TORCH_DIST_REF_LOAD", "1") == "1")
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute(checkpoint)

@@ -21,12 +21,12 @@ def qwen30(monkeypatch, tmp_path):
     return module
 
 
-def test_default_30b_keeps_hf_path(qwen30, monkeypatch):
+def test_explicit_30b_hf_mode_skips_conversion(qwen30, monkeypatch):
     commands = []
     launches = []
     monkeypatch.setattr(qwen30.U, "exec_command", commands.append)
     monkeypatch.setattr(qwen30.U, "execute_train", lambda **kwargs: launches.append(kwargs))
-    assert qwen30.prepare() is None
+    assert qwen30.prepare(torch_dist_ref_load=False) is None
     qwen30.execute()
     assert not any("torch.distributed.run" in cmd or "rm -rf" in cmd for cmd in commands)
     args = launches[0]["train_args"]
@@ -37,7 +37,7 @@ def test_default_30b_keeps_hf_path(qwen30, monkeypatch):
     assert "weight_nz_mode" in args
 
 
-def test_torch_dist_mode_uses_new_output_and_ref_load(qwen30, monkeypatch, tmp_path):
+def test_default_torch_dist_mode_uses_new_output_and_ref_load(qwen30, monkeypatch, tmp_path):
     commands = []
     launches = []
     existing = tmp_path / "models/Qwen3-30B-A3B_torch_dist"
@@ -55,7 +55,7 @@ def test_torch_dist_mode_uses_new_output_and_ref_load(qwen30, monkeypatch, tmp_p
 
     monkeypatch.setattr(qwen30.U, "exec_command", execute)
     monkeypatch.setattr(qwen30.U, "execute_train", lambda **kwargs: launches.append(kwargs))
-    checkpoint = qwen30.prepare(torch_dist_ref_load=True)
+    checkpoint = qwen30.prepare()
     qwen30.execute(checkpoint)
     assert Path(checkpoint) != existing
     assert sentinel.read_text() == "existing checkpoint"
@@ -68,6 +68,26 @@ def test_torch_dist_mode_uses_new_output_and_ref_load(qwen30, monkeypatch, tmp_p
     assert "--load " not in args
     assert "--colocate " in args
     assert "weight_nz_mode" in args
+
+
+@pytest.mark.parametrize("override,enabled", [(None, True), ("1", True), ("0", False)])
+def test_30b_main_checkpoint_mode(qwen30, monkeypatch, override, enabled):
+    monkeypatch.delenv("VIME_TEST_TORCH_DIST_REF_LOAD", raising=False)
+    if override is not None:
+        monkeypatch.setenv("VIME_TEST_TORCH_DIST_REF_LOAD", override)
+    for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    checkpoint = object()
+    launches = []
+
+    def prepare(*, torch_dist_ref_load):
+        assert torch_dist_ref_load is enabled
+        return checkpoint if enabled else None
+
+    monkeypatch.setattr(qwen30, "prepare", prepare)
+    monkeypatch.setattr(qwen30, "execute", launches.append)
+    qwen30.main()
+    assert launches == [checkpoint if enabled else None]
 
 
 def test_converter_bootstraps_before_first_megatron_import():
