@@ -12,11 +12,11 @@ from megatron.core import mpu
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoTokenizer
 
-from vime.platforms import current_platform
 from vime.observability import train_data_utils, train_metric_utils
 from vime.observability.logging_utils import init_tracking
 from vime.observability.profile_utils import TrainProfiler
 from vime.observability.timer import Timer, inverse_timer, timer, with_defer
+from vime.platforms import current_platform
 from vime.ray.train_actor import TrainRayActor
 from vime.utils import accelerator
 from vime.utils.data import process_rollout_data

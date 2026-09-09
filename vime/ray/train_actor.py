@@ -9,8 +9,8 @@ import torch
 import torch.distributed as dist
 
 import vime.utils.eval_config
-from vime.platforms import current_platform
 from vime.observability.logging_utils import configure_logger
+from vime.platforms import current_platform
 from vime.ray.ray_actor import RayActor
 from vime.utils import accelerator
 from vime.utils.distributed_utils import init_gloo_group

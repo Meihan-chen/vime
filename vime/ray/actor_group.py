@@ -90,7 +90,6 @@ class RayTrainGroup:
                     if os.path.exists(dynlib_path):
                         break
 
-
         # We cannot do routing replay for critic.
         if self.args.use_routing_replay and self.role == "actor":
             env_vars["ENABLE_ROUTING_REPLAY"] = "1"

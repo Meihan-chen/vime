@@ -54,7 +54,9 @@ def execute(torch_dist_checkpoint=None):
 
     checkpoint_args = f"--hf-checkpoint {model_dir} --load {model_dir} --ref-load {model_dir} --no-load-optim "
     if torch_dist_checkpoint is not None:
-        checkpoint_args = f"--hf-checkpoint {model_dir} --ref-load {shlex.quote(torch_dist_checkpoint)} --no-load-optim "
+        checkpoint_args = (
+            f"--hf-checkpoint {model_dir} --ref-load {shlex.quote(torch_dist_checkpoint)} --no-load-optim "
+        )
 
     rollout_args = (
         f"--prompt-data {prompt_data} "
@@ -111,7 +113,7 @@ def execute(torch_dist_checkpoint=None):
     )
 
     vllm_args = (
-        '--vllm-additional-config \'{"weight_nz_mode":0}\' '
+        "--vllm-additional-config '{\"weight_nz_mode\":0}' "
         "--rollout-num-gpus-per-engine 4 "
         "--vllm-enable-sleep-mode "
         "--vllm-enable-expert-parallel "

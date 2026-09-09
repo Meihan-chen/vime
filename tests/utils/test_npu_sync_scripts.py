@@ -100,8 +100,7 @@ def test_converter_bootstraps_before_first_megatron_import():
     bootstrap = next(
         node.lineno
         for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        and any(alias.name == "vime.backends.megatron_utils" for alias in node.names)
+        if isinstance(node, ast.Import) and any(alias.name == "vime.backends.megatron_utils" for alias in node.names)
     )
     assert bootstrap < first_megatron
     assert "vime.utils.common" not in ast.unparse(tree)

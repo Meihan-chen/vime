@@ -5,8 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vime.platforms import current_platform, get_platform, reset_platform_cache
-from vime.platforms import npu
+from vime.platforms import current_platform, get_platform, npu, reset_platform_cache
 from vime.platforms.npu import NPUAccelerator
 from vime.utils import accelerator
 

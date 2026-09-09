@@ -287,7 +287,9 @@ def test_provider_uses_main_dense_deepstack_gpt(native, hf_config, monkeypatch):
     monkeypatch.setattr(native, "Qwen3OmniMoeGPTModel", gpt)
     monkeypatch.setattr(native, "_load_vision_model", lambda *args: torch.nn.Linear(8, 8))
     monkeypatch.setattr(native.AutoConfig, "from_pretrained", lambda *args, **kwargs: hf_config)
-    monkeypatch.setattr(native, "get_gpt_layer_with_transformer_engine_spec", lambda *, qk_layernorm: {"qk_layernorm": qk_layernorm})
+    monkeypatch.setattr(
+        native, "get_gpt_layer_with_transformer_engine_spec", lambda *, qk_layernorm: {"qk_layernorm": qk_layernorm}
+    )
     args = SimpleNamespace(
         hf_checkpoint="unused",
         mtp_num_layers=None,

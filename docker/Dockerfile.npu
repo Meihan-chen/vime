@@ -132,11 +132,10 @@ RUN pip install \
 # Vime currently imports torch_memory_saver from its training actor.
 RUN git clone --depth 1 --branch 2026.6.0 \
       https://github.com/sgl-project/sgl-kernel-npu.git /root/sgl-kernel-npu && \
-    cd /root/sgl-kernel-npu && \
-    bash build.sh -a kernels && \
-    bash build.sh -a memory-saver && \
-    pip install --no-deps \
-      output/torch_memory_saver-*.whl && \
+    cd /root/sgl-kernel-npu/contrib/torch_memory_saver/python && \
+    python3 setup.py bdist_wheel && \
+    python3 -m pip install --no-deps \
+      dist/torch_memory_saver-*.whl && \
     cd /root && \
     rm -rf /root/sgl-kernel-npu
 

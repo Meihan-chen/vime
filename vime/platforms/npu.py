@@ -232,7 +232,9 @@ class NpuTrainingBootstrap(TrainingBootstrap):
             self._bootstrapping = False
 
     def repatch(self, args: Any) -> None:
-        features_manager = importlib.import_module("megatron_adaptor.features_manager.features_manager").FeaturesManager
+        features_manager = importlib.import_module(
+            "megatron_adaptor.features_manager.features_manager"
+        ).FeaturesManager
         full_args = importlib.import_module("megatron_adaptor.utils.args_utils").get_full_args()
         for key, value in vars(args).items():
             setattr(full_args, key, value)

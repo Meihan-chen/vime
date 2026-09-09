@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 _tests_root = Path(__file__).resolve().parents[1]
 if str(_tests_root) not in sys.path:
@@ -20,6 +20,20 @@ requires_vllm = pytest.mark.skipif(not _real_vllm, reason="requires real vllm in
 _unit_stubs.install_vllm_cli_stubs()
 
 NUM_GPUS = 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("preloaded", [False, True])
+def test_real_module_available_rejects_missing_package_and_stub(monkeypatch, preloaded):
+    name = "_vime_missing_optional_dependency"
+    if preloaded:
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    assert not _unit_stubs.real_module_available(name)
+
+
+@pytest.mark.unit
+def test_real_module_available_accepts_loaded_real_module():
+    assert _unit_stubs.real_module_available("sys")
 
 
 @pytest.fixture(scope="module")
