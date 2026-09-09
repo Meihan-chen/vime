@@ -11,8 +11,26 @@ the actual `exec_command` calls live in `command_utils`.
 """
 
 import json
+import os
 import shlex
 from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def get_fla_npu_runtime_env():
+    """Resolve OPP before Ray starts: CANN caches its paths during bootstrap.
+
+    Reuse the wheel's resolver (including FLA_NPU_OPP_PATH overrides) and
+    preserve other vendors. Loading it only after Megatron imports is too late.
+    """
+    import fla_npu  # noqa: F401 - resolve/load the installed OPP, without allocating tensors
+
+    return {
+        "ASCEND_CUSTOM_OPP_PATH": os.environ["ASCEND_CUSTOM_OPP_PATH"],
+        # Also opt this job into early worker-side loading, before other custom
+        # op libraries initialize. A path export alone is not sufficient.
+        "FLA_NPU_OPP_PATH": str(Path(os.environ["FLA_NPU_OP_API_LIB"]).parents[2]),
+    }
 
 
 # ── Platform contract ──────────────────────────────────────────────────────
@@ -23,7 +41,7 @@ class Platform:
     name: str
     ray_args: str  # ray-start resource flags, "{n}"-templated with the device count
     env: dict = field(default_factory=dict)  # device runtime env (into runtime_env + raylet)
-    torch_dist_convert: bool = True  # False -> load HF weights via bridge, no conversion
+    torch_dist_convert: bool = True  # False -> use native HF loading without automatic conversion
 
     def ray_start_args(self, num_devices: int) -> str:
         return self.ray_args.format(n=num_devices)
@@ -49,7 +67,7 @@ register(
         # vime requests NPU bundles, not GPU (see ray/placement_group.py), so advertise
         # the custom NPU resource rather than Ray GPU capacity.
         ray_args="--num-gpus 0 --resources '{{\"NPU\": {n}}}'",
-        torch_dist_convert=False,  # torch_dist conversion fails on Ascend -> bridge load
+        torch_dist_convert=False,  # Keep HF tests unchanged; torch_dist has a separate opt-in test.
         env={
             "PYTHONPATH": (
                 "/root/Megatron-LM:/root/vime:"

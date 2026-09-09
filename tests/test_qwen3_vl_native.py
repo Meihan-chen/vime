@@ -287,7 +287,7 @@ def test_provider_uses_main_dense_deepstack_gpt(native, hf_config, monkeypatch):
     monkeypatch.setattr(native, "Qwen3OmniMoeGPTModel", gpt)
     monkeypatch.setattr(native, "_load_vision_model", lambda *args: torch.nn.Linear(8, 8))
     monkeypatch.setattr(native.AutoConfig, "from_pretrained", lambda *args, **kwargs: hf_config)
-    monkeypatch.setattr(native, "get_gpt_layer_with_transformer_engine_spec", lambda **kwargs: kwargs)
+    monkeypatch.setattr(native, "get_gpt_layer_with_transformer_engine_spec", lambda *, qk_layernorm: {"qk_layernorm": qk_layernorm})
     args = SimpleNamespace(
         hf_checkpoint="unused",
         mtp_num_layers=None,
@@ -300,9 +300,11 @@ def test_provider_uses_main_dense_deepstack_gpt(native, hf_config, monkeypatch):
         rotary_percent=1.0,
         rotary_base=1000000,
     )
-    config = SimpleNamespace(pipeline_model_parallel_size=1, context_parallel_size=1)
+    config = SimpleNamespace(pipeline_model_parallel_size=1, context_parallel_size=1, normalization="RMSNorm")
     model = native.get_qwen3_vl_model_provider(args, config, None)()
-    assert calls["transformer_layer_spec"] == {"qk_layernorm": True, "normalization": "RMSNorm"}
+    assert calls["transformer_layer_spec"] == {"qk_layernorm": True}
+    assert calls["config"] is config
+    assert calls["config"].normalization == "RMSNorm"
     assert calls["position_embedding_type"] == "mrope"
     assert calls["rotary_base"] == 5000000
     assert calls["scatter_embedding_sequence_parallel"] is False

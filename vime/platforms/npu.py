@@ -7,6 +7,7 @@ import logging
 import os
 from contextlib import nullcontext
 from glob import glob
+from pathlib import Path
 from typing import Any
 
 from vime.utils import accelerator
@@ -76,6 +77,21 @@ def detect_npu() -> bool:
 
 def _ensure_torch_npu() -> None:
     importlib.import_module("torch_npu")
+
+
+def _prioritize_fla_npu_opp() -> None:
+    if not os.environ.get("FLA_NPU_OPP_PATH"):
+        return
+    # Serving imports can prepend an OPP containing the same FwdH op name.
+    # Training must retain FLA's implementation, without removing other vendors.
+    vendor_dir = Path(os.environ["FLA_NPU_OP_API_LIB"]).parent.parent.parent
+    roots = (
+        [str(vendor_dir.parent.parent), str(vendor_dir)]
+        if vendor_dir.parent.name == "vendors"
+        else [str(vendor_dir)]
+    )
+    paths = [p for p in os.environ.get("ASCEND_CUSTOM_OPP_PATH", "").split(os.pathsep) if p]
+    os.environ["ASCEND_CUSTOM_OPP_PATH"] = os.pathsep.join(dict.fromkeys([*roots, *paths]))
 
 
 def _install_safe_empty_cache() -> None:
@@ -211,17 +227,22 @@ class NpuTrainingBootstrap(TrainingBootstrap):
             return
         self._bootstrapping = True
         try:
+            # GDN jobs resolve this path before Ray starts. Load their extension
+            # before Megatron/serving imports initialize other custom-op libraries.
+            if os.environ.get("FLA_NPU_OPP_PATH"):
+                importlib.import_module("fla_npu")
             _ensure_torch_npu()
-            # Select NPU before MindSpeed can make torch.cuda appear available.
+            # Select NPU before MegatronAdaptor can make torch.cuda appear available.
             register_npu_accelerator()
             selected = accelerator.get_accelerator()
             if selected.name != "npu":
                 raise RuntimeError(f"NPU bootstrap cannot use an already selected {selected.name!r} accelerator")
             _install_safe_empty_cache()
-            # MindSpeed must install its pre-patches before any Megatron module
+            # MegatronAdaptor must install its pre-patches before any Megatron module
             # is imported. Apply the NPU attention override afterwards.
-            importlib.import_module("mindspeed.megatron_adaptor")
+            importlib.import_module("megatron_adaptor")
             importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
+            _prioritize_fla_npu_opp()
         except Exception:
             # A failed bootstrap may be retried after the runtime environment is
             # corrected; never leave a partially initialized success marker.
@@ -232,9 +253,18 @@ class NpuTrainingBootstrap(TrainingBootstrap):
             self._bootstrapping = False
 
     def repatch(self, args: Any) -> None:
-        importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
-        adaptor = importlib.import_module("mindspeed.megatron_adaptor")
-        adaptor.repatch(args)
+        features_manager = importlib.import_module("megatron_adaptor.features_manager.features_manager").FeaturesManager
+        full_args = importlib.import_module("megatron_adaptor.utils.args_utils").get_full_args()
+        for key, value in vars(args).items():
+            setattr(full_args, key, value)
+        features_manager.remove_patches()
+        features_manager.apply_features_pre_patches(full_args)
+        features_manager.apply_features_patches(full_args)
+        # Repatch may replace attention again; importing a cached module alone
+        # does not reinstall Vime's existing override.
+        attention = importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
+        attention.DotProductAttention.forward = attention.npu_dot_product_attention_forward
+        _prioritize_fla_npu_opp()
 
     def adjust_tp_partition_dim(self, name: str, partition_dim: int) -> int:
         if "linear_fc1.weight" in name or "linear_fc1.bias" in name:

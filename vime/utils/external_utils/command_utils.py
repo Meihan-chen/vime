@@ -28,10 +28,9 @@ def convert_checkpoint(
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
 ):
-    # Platforms without torch_dist conversion (e.g. NPU, verified to fail on Ascend)
-    # load HF weights directly via `--megatron-to-hf-mode bridge`; nothing to convert.
+    # Platforms without automatic conversion use native HF loading by default.
     if not current_platform().torch_dist_convert:
-        print(f"convert_checkpoint skip on {current_platform().name} (bridge load)")
+        print(f"convert_checkpoint skip on {current_platform().name} (native HF load)")
         return
 
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"

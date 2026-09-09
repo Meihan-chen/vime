@@ -2,10 +2,11 @@ import os
 import shlex
 
 import vime.utils.external_utils.command_utils as U
+from vime.utils.external_utils.launch import get_fla_npu_runtime_env
 
 
-TEST_ROOT = os.environ.get("HF_HOME") or "/root"
-MODEL_DIR = f"{TEST_ROOT}/models/Qwen3.5-35B-A3B"
+TEST_ROOT = os.environ.get("HF_HOME") or "/root/.cache/modelscope/hub"
+MODEL_DIR = f"{TEST_ROOT}/models/Qwen/Qwen3.5-35B-A3B"
 DATASET_DIR = f"{TEST_ROOT}/datasets/dapo-math-17k"
 
 
@@ -24,12 +25,11 @@ def execute():
     model_dir = shlex.quote(MODEL_DIR)
     prompt_data = shlex.quote(f"{DATASET_DIR}/dapo-math-17k.jsonl")
 
-    # NPU skips torch_dist conversion; HF weights load directly via bridge mode.
+    # Use main's native HF loader; no checkpoint conversion is needed here.
     checkpoint_args = (
         f"--hf-checkpoint {model_dir} "
         f"--load {model_dir} "
         f"--ref-load {model_dir} "
-        "--megatron-to-hf-mode bridge "
         "--no-load-optim "
     )
 
@@ -90,10 +90,10 @@ def execute():
     )
 
     vllm_args = (
+        '--vllm-additional-config \'{"weight_nz_mode":0}\' '
         "--rollout-num-gpus-per-engine 2 "
         "--vllm-gpu-memory-utilization 0.7 "
         "--vllm-enable-sleep-mode "
-        "--vllm-weight-sync-mode native "
         "--vllm-enforce-eager "
     )
 
@@ -132,9 +132,10 @@ def execute():
         num_gpus_per_node=16,
         megatron_model_type="qwen3.5-35B-A3B",
         extra_env_vars={
+            # Export before ray start, not only after Megatron initializes CANN.
+            **get_fla_npu_runtime_env(),
             "DISABLE_L2_CACHE": "1",
             "VLLM_USE_AOT_COMPILE": "0",
-            "ASCEND_CUSTOM_OPP_PATH": "/vllm-workspace/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer:/usr/local/Ascend/cann-9.0.0/opp/vendors/fla_npu_transformer",
         },
     )
 

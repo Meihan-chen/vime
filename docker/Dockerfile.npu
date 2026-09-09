@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-ARG BASE_IMAGE=quay.io/ascend/vllm-ascend
-ARG BASE_IMAGE_TAG=v0.23.0-a3
+ARG BASE_IMAGE=quay.io/atlas-ci/vllm-ascend
+ARG BASE_IMAGE_TAG=v0.28.0-fd81546-a3
 FROM ${BASE_IMAGE}:${BASE_IMAGE_TAG}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -35,7 +35,7 @@ ENV SOC_VERSION=$SOC_VERSION \
 # PATCH MAINTENANCE: keep patch COPY/apply operations and
 # docker/npu_patch/series.conf synchronized.
 COPY docker/npu_patch /opt/npu_patch
-COPY docker/patch/latest/megatron.patch /opt/vime_patch/megatron.patch
+COPY docker/patch/latest/megatron.patch /opt/npu_patch/megatron-common.patch
 
 RUN git config --global http.sslVerify false
 
@@ -90,9 +90,9 @@ RUN git clone https://github.com/ISEEKYAN/mbridge.git /root/mbridge && \
 # The NPU Megatron patch is based on the common Vime Megatron patch, so the
 # common patch must be applied first.
 RUN git -C /root/Megatron-LM apply --check --whitespace=nowarn \
-      /opt/vime_patch/megatron.patch && \
+      /opt/npu_patch/megatron-common.patch && \
     git -C /root/Megatron-LM apply --whitespace=nowarn \
-      /opt/vime_patch/megatron.patch && \
+      /opt/npu_patch/megatron-common.patch && \
     git -C /root/Megatron-LM apply --check --whitespace=nowarn \
       /opt/npu_patch/megatron.patch && \
     git -C /root/Megatron-LM apply --whitespace=nowarn \

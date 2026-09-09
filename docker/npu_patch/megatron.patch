@@ -934,8 +934,8 @@ index 000000000..dc388fd7f
 +        scale = k.shape[-1] ** -0.5
 +
 +    if use_qk_l2norm_in_kernel:
-+        q = l2norm(q, dim=-1, eps=1e-6)
-+        k = l2norm(k, dim=-1, eps=1e-6)
++        q = l2norm(q, eps=1e-6)
++        k = l2norm(k, eps=1e-6)
 +
 +    o, final_state = ChunkGatedDeltaRuleFunction.apply(
 +        q,
@@ -5435,27 +5435,6 @@ index d0ceca7af..f16796680 100644
      def _norm(self, x):
          """
          Performs the actual L2 normalization.
-diff --git a/megatron/core/transformer/transformer_layer.py b/megatron/core/transformer/transformer_layer.py
-index 227e95862..da4540185 100644
---- a/megatron/core/transformer/transformer_layer.py
-+++ b/megatron/core/transformer/transformer_layer.py
-@@ -775,6 +775,16 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
-                 self._set_fc2_residual(residual)
-             mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output, padding_mask=padding_mask)
-
-+        mlp_output, mlp_output_bias = mlp_output_with_bias
-+        mlp_output = self.post_mlp_layernorm(mlp_output)
-+        mlp_output_with_bias = (mlp_output, mlp_output_bias)
-+
-+        if self.recompute_pre_mlp_layernorm:
-+            # discard the output of the pre-mlp layernorm and register the recompute
-+            # as a gradient hook of mlp_output_with_bias[0]
-+            self.pre_mlp_norm_checkpoint.discard_output_and_register_recompute(
-+                mlp_output_with_bias[0]
-+            )
-         nvtx_range_pop(suffix="mlp")
-
-         if (
 diff --git a/megatron/core/transformer/utils.py b/megatron/core/transformer/utils.py
 index 880c53099..dbc95736e 100644
 --- a/megatron/core/transformer/utils.py

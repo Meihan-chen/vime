@@ -1,5 +1,6 @@
 """CPU contracts for NPU selection and pre-Megatron bootstrap ordering."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -87,15 +88,25 @@ def test_registered_npu_does_not_override_explicit_cuda_platform(monkeypatch):
     assert accelerator.initialize_accelerator().name == "cuda"
 
 
-def test_bootstrap_selects_npu_before_mindspeed_and_attention(monkeypatch):
+@pytest.mark.parametrize("gdn_enabled", [False, True])
+def test_bootstrap_selects_npu_before_adaptor_and_attention(monkeypatch, gdn_enabled):
+    if gdn_enabled:
+        monkeypatch.setenv("FLA_NPU_OPP_PATH", "/installed/fla")
+    else:
+        monkeypatch.delenv("FLA_NPU_OPP_PATH", raising=False)
     events = []
     bootstrap = current_platform().megatron
     monkeypatch.setattr(npu, "_ensure_torch_npu", lambda: events.append("torch_npu"))
     monkeypatch.setattr(npu, "_install_safe_empty_cache", lambda: events.append("empty_cache_guard"))
+    monkeypatch.setattr(npu, "_prioritize_fla_npu_opp", lambda: events.append("fla_priority") if gdn_enabled else None)
     original_import = npu.importlib.import_module
 
     def import_module(name, *args, **kwargs):
-        if name in {"mindspeed.megatron_adaptor", "vime.backends.megatron_utils.npu_attention_patch"}:
+        if name == "fla_npu":
+            assert gdn_enabled
+            events.append(name)
+            return SimpleNamespace()
+        if name in {"megatron_adaptor", "vime.backends.megatron_utils.npu_attention_patch"}:
             assert accelerator.get_accelerator().name == "npu"
             events.append(name)
             bootstrap.bootstrap()  # Recursive imports must not repeat initialization.
@@ -105,12 +116,24 @@ def test_bootstrap_selects_npu_before_mindspeed_and_attention(monkeypatch):
     monkeypatch.setattr(npu.importlib, "import_module", import_module)
     bootstrap.bootstrap()
     bootstrap.bootstrap()
-    assert events == [
+    assert events == (["fla_npu"] if gdn_enabled else []) + [
         "torch_npu",
         "empty_cache_guard",
-        "mindspeed.megatron_adaptor",
+        "megatron_adaptor",
         "vime.backends.megatron_utils.npu_attention_patch",
-    ]
+    ] + (["fla_priority"] if gdn_enabled else [])
+
+
+def test_gdn_opp_priority_keeps_other_vendors(monkeypatch):
+    monkeypatch.setenv("ASCEND_CUSTOM_OPP_PATH", "/serving:/installed/opp:/installed/opp/vendors/fla_npu_transformer")
+    monkeypatch.delenv("FLA_NPU_OPP_PATH", raising=False)
+    npu._prioritize_fla_npu_opp()
+    assert os.environ["ASCEND_CUSTOM_OPP_PATH"].startswith("/serving:")
+    monkeypatch.setenv("FLA_NPU_OPP_PATH", "/installed/opp/vendors/fla_npu_transformer")
+    monkeypatch.setenv("FLA_NPU_OP_API_LIB", "/installed/opp/vendors/fla_npu_transformer/op_api/lib/libcust_opapi.so")
+    npu._prioritize_fla_npu_opp()
+    npu._prioritize_fla_npu_opp()
+    assert os.environ["ASCEND_CUSTOM_OPP_PATH"] == "/installed/opp:/installed/opp/vendors/fla_npu_transformer:/serving"
 
 
 def test_bootstrap_rejects_preselected_cuda_without_replacing_it(monkeypatch):
@@ -123,3 +146,49 @@ def test_bootstrap_rejects_preselected_cuda_without_replacing_it(monkeypatch):
     assert accelerator._ACCELERATOR is selected
     assert not bootstrap._bootstrapping
     assert not bootstrap._bootstrapped
+
+
+def test_repatch_passes_typed_args_and_restores_attention(monkeypatch):
+    events = []
+    full_args = SimpleNamespace(adaptor_default=True)
+    typed_config = {"weight_nz_mode": 0}
+    args = SimpleNamespace(vllm_additional_config=typed_config, tensor_model_parallel_size=4)
+    original_forward = object()
+    vime_forward = object()
+    attention_class = SimpleNamespace(forward=vime_forward)
+
+    def apply_features(config):
+        assert config is full_args
+        assert config.vllm_additional_config is typed_config
+        assert config.tensor_model_parallel_size == 4
+        assert config.adaptor_default
+        attention_class.forward = original_forward
+        events.append("features")
+
+    modules = {
+        "megatron_adaptor.features_manager.features_manager": SimpleNamespace(
+            FeaturesManager=SimpleNamespace(
+                remove_patches=lambda: events.append("remove"),
+                apply_features_pre_patches=lambda config: events.append(("pre", config)),
+                apply_features_patches=apply_features,
+            )
+        ),
+        "megatron_adaptor.utils.args_utils": SimpleNamespace(get_full_args=lambda: full_args),
+        "vime.backends.megatron_utils.npu_attention_patch": SimpleNamespace(
+            DotProductAttention=attention_class,
+            npu_dot_product_attention_forward=vime_forward,
+        ),
+    }
+    bootstrap = current_platform().megatron
+    original_import = npu.importlib.import_module
+
+    def import_module(name, *args, **kwargs):
+        if name in modules:
+            return modules[name]
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(npu.importlib, "import_module", import_module)
+    bootstrap.repatch(args)
+    assert events == ["remove", ("pre", full_args), "features"]
+    assert attention_class.forward is vime_forward
+    assert args.vllm_additional_config is typed_config

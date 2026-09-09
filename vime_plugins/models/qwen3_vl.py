@@ -191,7 +191,7 @@ def get_qwen3_vl_model_provider(args, config, vp_stage):
     hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
     if hf_config.model_type != "qwen3_vl":
         raise ValueError(f"{args.hf_checkpoint} is not a Qwen3-VL checkpoint")
-    layer_spec = get_gpt_layer_with_transformer_engine_spec(qk_layernorm=True, normalization=args.normalization)
+    layer_spec = get_gpt_layer_with_transformer_engine_spec(qk_layernorm=True)
 
     def model_provider(pre_process=True, post_process=True, vp_stage=None):
         return Qwen3VLModel(

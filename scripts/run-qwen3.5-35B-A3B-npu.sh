@@ -43,14 +43,17 @@ export HCCL_HOST_SOCKET_PORT_RANGE=60000-60050
 export HCCL_NPU_SOCKET_PORT_RANGE=61000-61050
 export HCCL_CONNECT_TIMEOUT=7200
 export HCCL_DETERMINISTIC=true
-export VLLM_ASCEND_ENABLE_NZ=0
 export ASCEND_COREDUMP_SIGNAL=None
 export ATB_MATMUL_SHUFFLE_K_ENABLE=0
 export ATB_LLM_LCOC_ENABLE=0
 export TASK_QUEUE_ENABLE=0
 export RAY_DISABLE_SIGINT_OVERRIDE=1
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
-export ASCEND_CUSTOM_OPP_PATH=/vllm-workspace/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer:/usr/local/Ascend/cann-9.0.0/opp/vendors/fla_npu_transformer
+# Resolve the installed FLA OPP before Ray/CANN start; retain other vendors.
+ASCEND_CUSTOM_OPP_PATH=$(python3 -c 'from vime.utils.external_utils.launch import get_fla_npu_runtime_env; print(get_fla_npu_runtime_env()["ASCEND_CUSTOM_OPP_PATH"])')
+export ASCEND_CUSTOM_OPP_PATH
+FLA_NPU_OPP_PATH=$(python3 -c 'from vime.utils.external_utils.launch import get_fla_npu_runtime_env; print(get_fla_npu_runtime_env()["FLA_NPU_OPP_PATH"])')
+export FLA_NPU_OPP_PATH
 export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64:/usr/local/Ascend/ascend-toolkit/latest/lib64:/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/lib:/usr/local/Ascend/cann/lib64:${LD_LIBRARY_PATH}
 export VLLM_DISABLE_COMPILE_CACHE=1
 export TRANSFORMERS_VERBOSITY=error
@@ -66,7 +69,6 @@ CKPT_ARGS=(
    --save /path/to/Qwen3.5-35B-A3B_vime_npu/
    --save-interval 20
    --no-load-optim
-   --megatron-to-hf-mode bridge
 )
 
 ROLLOUT_ARGS=(
@@ -133,10 +135,10 @@ OPTIMIZER_ARGS=(
 )
 
 VLLM_ARGS=(
+   --vllm-additional-config '{"weight_nz_mode":0}'
    --rollout-num-gpus-per-engine 2
    --vllm-gpu-memory-utilization 0.7
    --vllm-enable-sleep-mode
-   --vllm-weight-sync-mode native
    --vllm-enforce-eager
 )
 
@@ -163,7 +165,7 @@ ray start --head \
 	  --dashboard-host=0.0.0.0
 
 # Build the runtime environment JSON with proper variable substitution
-RUNTIME_ENV_JSON=$(cat << 'EOF'
+RUNTIME_ENV_JSON=$(cat << EOF
 {
   "env_vars": {
     "PYTHONPATH": "${VIME_DIR}:/root/Megatron-LM:/vllm-workspace/vllm:/vllm-workspace/vllm-ascend:/root/Megatron-Bridge/src:/root/mbridge:/root/MegatronAdaptor:/root/TransformerEngineNPU:/usr/local/Ascend/ascend-toolkit/latest/python/site-packages",
@@ -175,7 +177,8 @@ RUNTIME_ENV_JSON=$(cat << 'EOF'
     "VLLM_DISABLE_COMPILE_CACHE": "1",
     "TRANSFORMERS_VERBOSITY": "error",
     "RUST_LOG": "vllm_router_rs=warn",
-    "ASCEND_CUSTOM_OPP_PATH": "/vllm-workspace/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer:/usr/local/Ascend/cann-9.0.0/opp/vendors/fla_npu_transformer",
+    "ASCEND_CUSTOM_OPP_PATH": "${ASCEND_CUSTOM_OPP_PATH}",
+    "FLA_NPU_OPP_PATH": "${FLA_NPU_OPP_PATH}",
     "LD_LIBRARY_PATH": "/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/ascend-toolkit/latest/lib64:/usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/:/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/lib:/usr/local/Ascend/cann/lib64:/usr/local/Ascend/cann/aarch64-linux/devlib"
   }
 }

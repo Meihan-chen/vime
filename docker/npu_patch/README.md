@@ -2,11 +2,21 @@
 
 This guide provides instructions for installing Vime with NPU support, including all required dependencies and patches.
 
+> S7 integration status: the training-stack revisions below are candidates from
+> Ascend PRs #385/#409, not a validated replacement for the S6 environment.
+> Native HF loading is retained; do not restore Bridge loading or run these
+> installation steps over an existing patched environment without a dependency
+> review. `Dockerfile.npu` still has a historical v0.23 base-image default and is
+> not yet a reproducible image for the frozen serving pair below. Qwen3.5 GDN,
+> convolution and gated-norm dispatch still require native-path NPU validation.
+
 ## Component Version Mapping
 
 | Component       | Version/Commit                           | Source                                                                                                              |
 | --------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | vime            | main                                     | [GitHub](https://github.com/vllm-project/vime/tree/main)                                                            |
+| vLLM | e6bfe03ad73a3330cb427885aa90d97a12e1c704 + NPU patch | S6 serving baseline, retained for S7 |
+| vLLM-Ascend | fd815467c221ee600137f6bdd53fe354d5e7c999 + NPU patch | S6 serving baseline, retained for S7 |
 | Megatron-Bridge | 7f0fb3456f8ffe47599b5fd167b454605d85f932 | [GitHub](https://github.com/radixark/Megatron-Bridge)                                                               |
 | Megatron-LM     | 1dcf0dafa884ad52ffb243625717a3471643e087 | [GitHub](https://github.com/NVIDIA/Megatron-LM)                                                                     |
 | MegatronAdaptor | 15582addff3f3d4680e350826fa70d012b475509 | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor)                                                               |
@@ -33,9 +43,11 @@ git clone --branch ascend https://github.com/vllm-project/vime.git "${WORKSPACE}
 export PATCH_DIR="${WORKSPACE}/vime/docker/npu_patch"
 ```
 
-#### 1. Megatron-Bridge
+#### 1. Megatron-Bridge (legacy build dependency, not the native loader)
 
-Used via `PYTHONPATH` (no editable install); it requires `nvidia-modelopt`.
+The source PR used this via `PYTHONPATH` (no editable install) and required
+`nvidia-modelopt`. This is not a prerequisite for Vime's native HF loader;
+whether to retain it in the S7 image remains under review.
 
 ```bash
 export MEGATRON_BRIDGE_COMMIT=7f0fb3456f8ffe47599b5fd167b454605d85f932
@@ -71,7 +83,7 @@ pip install --no-deps --no-build-isolation -e ${WORKSPACE}/TransformerEngineNPU
 
 Do not install the CUDA TransformerEngine package in the same environment.
 
-#### 4. MegatronAdaptor and TransformerEngineNPU
+#### 4. MindSpeed
 
 ```bash
 export MINDSPEED_COMMIT=fc63de5c48426dd019c3b3f39e65f5bdf56e4086
@@ -91,10 +103,8 @@ pip install "vllm-router>=0.1.14"
 pip install --no-deps --no-build-isolation -e "${WORKSPACE}/vime"
 ```
 
-Build the matching Ascend `torch_memory_saver` wheel. NPU does not actually use
-`torch_memory_saver`, but the code still imports and calls it and will break
-without it, and there is currently no published Python 3.12 build — so compile
-it from source:
+The NPU training region and optimizer state use Ascend `torch_memory_saver`.
+Retain the working build in an existing environment; the source build recipe is:
 
 ```bash
 git clone --branch 2026.6.0 https://github.com/sgl-project/sgl-kernel-npu.git "${WORKSPACE}/sgl-kernel-npu"
@@ -107,26 +117,32 @@ pip install --no-deps output/torch_memory_saver-0.0.8-cp312-cp312-linux_aarch64.
 #### 5. Install vLLM and vLLM Ascend
 
 ```bash
-export VLLM_COMMIT=9090368b650896bf5fc990c921df7eb4c20355a5
+export VLLM_COMMIT=e6bfe03ad73a3330cb427885aa90d97a12e1c704
+export VLLM_ASCEND_COMMIT=fd815467c221ee600137f6bdd53fe354d5e7c999
 
 git clone https://github.com/vllm-project/vllm.git "${WORKSPACE}/vllm"
 git -C "${WORKSPACE}/vllm" checkout "${VLLM_COMMIT}"
 VLLM_TARGET_DEVICE=empty pip install -v -e "${WORKSPACE}/vllm"
 
 git clone https://github.com/vllm-project/vllm-ascend.git "${WORKSPACE}/vllm-ascend"
+git -C "${WORKSPACE}/vllm-ascend" checkout "${VLLM_ASCEND_COMMIT}"
 git -C "${WORKSPACE}/vllm-ascend" submodule update --init --recursive
 pip install -v -e "${WORKSPACE}/vllm-ascend"
 ```
 
-> [!NOTE]
-> vLLM Ascend has not yet cut a release tag against vLLM 0.22.0. As a temporary
-> measure we pin vLLM to the commit below and build vLLM Ascend from source.
-> Once vLLM Ascend officially supports 0.22.0, this whole step can be omitted and
-> the released packages used instead.
+Apply `vllm.patch` and `vllm-ascend.patch` to those exact revisions before
+validation. Do not replace the existing source trees during conflict resolution.
+
+For image patch reconciliation, persist the common Megatron patch as
+`/opt/npu_patch/megatron-common.patch`. `series.conf` applies common → NPU and
+reverts in reverse order. This reconciles patch bytes, not repository versions;
+an old Megatron checkout cannot be upgraded by the patch reconciler alone.
 
 ## Additional Dependencies
 
-Ensure the following packages are pinned to these matching versions：
+The source PR specified the following versions. They are not an instruction to
+upgrade the existing S6 environment; in particular, validate the new NPU kernel
+requirements before changing torch-npu:
 
 ```shell
 pip install torch-npu==2.10.0.post2
