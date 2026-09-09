@@ -7,8 +7,10 @@ This guide provides instructions for installing Vime with NPU support, including
 | Component       | Version/Commit                           | Source                                                                                                              |
 | --------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | vime            | main                                     | [GitHub](https://github.com/vllm-project/vime/tree/main)                                                            |
-| Megatron-Bridge | 3fd3768045422d0aa5c97e90a4e6c659aea9acb9 | [GitHub](https://github.com/radixark/Megatron-Bridge)                                                               |
-| Megatron-LM     | 3714d81d418c9f1bca4594fc35f9e8289f652862 | [GitHub](https://github.com/NVIDIA/Megatron-LM)                                                                     |
+| Megatron-Bridge | 7f0fb3456f8ffe47599b5fd167b454605d85f932 | [GitHub](https://github.com/radixark/Megatron-Bridge)                                                               |
+| Megatron-LM     | 1dcf0dafa884ad52ffb243625717a3471643e087 | [GitHub](https://github.com/NVIDIA/Megatron-LM)                                                                     |
+| MegatronAdaptor | 15582addff3f3d4680e350826fa70d012b475509 | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor)                                                               |
+| TransformerEngineNPU | d743c83d060d5edc48867ecb9e93ec80d81860e4 | [GitCode](https://gitcode.com/Ascend/TransformerEngineNPU)                                                          |
 | MindSpeed       | fc63de5c48426dd019c3b3f39e65f5bdf56e4086 | [GitCode](https://gitcode.com/Ascend/MindSpeed)                                                                     |
 | HDK             | 25.3.RC1                                 | [Ascend](https://www.hiascend.com/hardware/firmware-drivers/commercial?product=7\&model=33)                         |
 | CANN            | 9.0.0                                    | [Ascend](https://www.hiascend.com/developer/download/community/result?module=cann\&cann=9.0.0\&product=7\&model=33) |
@@ -31,13 +33,12 @@ git clone --branch ascend https://github.com/vllm-project/vime.git "${WORKSPACE}
 export PATCH_DIR="${WORKSPACE}/vime/docker/npu_patch"
 ```
 
-
 #### 1. Megatron-Bridge
 
 Used via `PYTHONPATH` (no editable install); it requires `nvidia-modelopt`.
 
 ```bash
-export MEGATRON_BRIDGE_COMMIT=3fd3768045422d0aa5c97e90a4e6c659aea9acb9
+export MEGATRON_BRIDGE_COMMIT=7f0fb3456f8ffe47599b5fd167b454605d85f932
 export MBRIDGE_COMMIT=89eb10887887bc74853f89a4de258c0702932a1c
 pip install "git+https://github.com/ISEEKYAN/mbridge.git@${MBRIDGE_COMMIT}" --no-deps
 git clone --branch bridge https://github.com/radixark/Megatron-Bridge.git "${WORKSPACE}/Megatron-Bridge"
@@ -48,21 +49,29 @@ git -C "${WORKSPACE}/Megatron-Bridge" apply --whitespace=nowarn "${PATCH_DIR}/me
 pip install --no-build-isolation "nvidia-modelopt[torch]>=0.37.0"
 ```
 
-
 #### 2. Megatron-LM
 
 ```bash
-export MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
+export MEGATRON_COMMIT=1dcf0dafa884ad52ffb243625717a3471643e087
 git clone https://github.com/NVIDIA/Megatron-LM.git "${WORKSPACE}/Megatron-LM"
 git -C "${WORKSPACE}/Megatron-LM" checkout "${MEGATRON_COMMIT}"
 
-git -C "${WORKSPACE}/Megatron-LM" apply --whitespace=nowarn "${PATCH_DIR}/megatron_comm.patch"
+git -C "${WORKSPACE}/Megatron-LM" apply --whitespace=nowarn "${WORKSPACE}/vime/docker/patch/latest/megatron.patch"
 git -C "${WORKSPACE}/Megatron-LM" apply --whitespace=nowarn "${PATCH_DIR}/megatron.patch"
 
 pip install --no-deps --no-build-isolation -e "${WORKSPACE}/Megatron-LM"
 ```
 
-#### 3. MindSpeed
+#### 3. MegatronAdaptor and TransformerEngineNPU
+
+The NPU training stack now uses the two source repositories directly. The mainline Megatron patch is applied first; `docker/npu_patch/megatron.patch` contains only the NPU-specific changes rebased onto that mainline patch:
+
+pip install --no-deps --no-build-isolation -e ${WORKSPACE}/MegatronAdaptor
+pip install --no-deps --no-build-isolation -e ${WORKSPACE}/TransformerEngineNPU
+
+Do not install the CUDA TransformerEngine package in the same environment.
+
+#### 4. MegatronAdaptor and TransformerEngineNPU
 
 ```bash
 export MINDSPEED_COMMIT=fc63de5c48426dd019c3b3f39e65f5bdf56e4086
@@ -74,8 +83,7 @@ git -C "${WORKSPACE}/MindSpeed" apply --whitespace=nowarn "${PATCH_DIR}/mindspee
 pip install --no-deps --no-build-isolation -e "${WORKSPACE}/MindSpeed"
 ```
 
-
-#### 4. Vime
+#### 5. Vime
 
 ```bash
 pip install -r "${WORKSPACE}/vime/requirements.txt"
@@ -97,7 +105,6 @@ pip install --no-deps output/torch_memory_saver-0.0.8-cp312-cp312-linux_aarch64.
 ```
 
 #### 5. Install vLLM and vLLM Ascend
-
 
 ```bash
 export VLLM_COMMIT=9090368b650896bf5fc990c921df7eb4c20355a5
@@ -122,8 +129,7 @@ pip install -v -e "${WORKSPACE}/vllm-ascend"
 Ensure the following packages are pinned to these matching versions：
 
 ```shell
-pip install torch-npu==2.10.0
+pip install torch-npu==2.10.0.post2
 pip install torchvision==0.25.0
 pip install numpy==1.26.4
 ```
-

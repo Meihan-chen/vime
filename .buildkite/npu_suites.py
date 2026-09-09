@@ -31,6 +31,7 @@ SUITES = {
         ("test_qwen3_4B_npu.py", "npu-8", "", {}),
         ("test_qwen3_30B_A3B_npu.py", "npu-16", "", {}),
         ("test_qwen3_vl_8B_npu.py", "npu-8", "", {}),
+        ("test_qwen3.5_35B_A3B_npu.py", "npu-16", "", {}),
     ],
     "nightly": [],
 }

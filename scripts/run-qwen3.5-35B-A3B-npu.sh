@@ -9,7 +9,7 @@ npu-smi info 2>/dev/null | grep rayWorker | awk '{print $4}' | xargs -r kill -9 
 sleep 3
 
 # Ray isolation: independent temp-dir, ports, and cleanup
-export RAY_TMPDIR=/tmp/ray_vime_npu_retool
+export RAY_TMPDIR=/tmp/ray_vime_npu_qwen35_35b_a3b
 export RAY_PORT=6379
 export RAY_DASHBOARD_PORT=8265
 export RAY_AGENT_PORT=52378
@@ -20,7 +20,7 @@ rm -rf "${RAY_TMPDIR}"
 sleep 2
 
 project_name="vime"
-exp_name="qwen3-4b-retool-rl"
+exp_name="qwen35-35b-a3b-rl"
 RAY_DATA_HOME=${RAY_DATA_HOME:-"/root/logs"}
 start_time=$(date +"%Y%m%d_%H%M%S")
 LOG_DIR=${LOG_DIR:-"${RAY_DATA_HOME}/${project_name}/${exp_name}"}
@@ -34,7 +34,7 @@ VIME_DIR="/root/vime"
 source /usr/local/Ascend/driver/bin/setenv.bash
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 source /usr/local/Ascend/nnal/atb/set_env.sh
-export PYTHONPATH="${VIME_DIR}:${VIME_DIR}/examples/retool:/root/Megatron-LM:/root/vllm:/root/vllm-ascend:/root/Megatron-Bridge:/root/mbridge:/root/MegatronAdaptor:/root/TransformerEngineNPU:/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:/usr/local/Ascend/ascend-toolkit/latest/tools/ms_fmk_transplt/torch_npu_bridge:${PYTHONPATH}"
+export PYTHONPATH="${VIME_DIR}:/root/Megatron-LM:/vllm-workspace/vllm:/vllm-workspace/vllm-ascend:/root/Megatron-Bridge/src:/root/mbridge:/root/MegatronAdaptor:/root/TransformerEngineNPU:/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:${PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
 export CUDA_DEVICE_MAX_CONNECTIONS=1
@@ -47,22 +47,23 @@ export VLLM_ASCEND_ENABLE_NZ=0
 export ASCEND_COREDUMP_SIGNAL=None
 export ATB_MATMUL_SHUFFLE_K_ENABLE=0
 export ATB_LLM_LCOC_ENABLE=0
-export TASK_QUEUE_ENABLE=1
+export TASK_QUEUE_ENABLE=0
 export RAY_DISABLE_SIGINT_OVERRIDE=1
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+export ASCEND_CUSTOM_OPP_PATH=/vllm-workspace/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer:/usr/local/Ascend/cann-9.0.0/opp/vendors/fla_npu_transformer
 export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64:/usr/local/Ascend/ascend-toolkit/latest/lib64:/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/lib:/usr/local/Ascend/cann/lib64:${LD_LIBRARY_PATH}
 export VLLM_DISABLE_COMPILE_CACHE=1
 export TRANSFORMERS_VERBOSITY=error
 export RUST_LOG=vllm_router_rs=warn
 
 NUM_NPUS=16
-source "${VIME_DIR}/scripts/models/qwen3-4B-Instruct-2507.sh"
+source "${VIME_DIR}/scripts/models/qwen3.5-35B-A3B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /path/to/Qwen3-4B_sft_vime_hf
-   --ref-load /path/to/Qwen3-4B_sft_vime_hf
-   --load /path/to/Qwen3-4B_vime_npu/
-   --save /path/to/Qwen3-4B_vime_npu/
+   --hf-checkpoint /path/to/Qwen3.5-35B-A3B
+   --ref-load  /path/to/Qwen3.5-35B-A3B
+   --load /path/to/Qwen3.5-35B-A3B_vime_npu/
+   --save /path/to/Qwen3.5-35B-A3B_vime_npu/
    --save-interval 20
    --no-load-optim
    --megatron-to-hf-mode bridge
@@ -74,29 +75,30 @@ ROLLOUT_ARGS=(
    --label-key label
    --apply-chat-template
    --rollout-shuffle
-   --reward-key score
+   --rm-type deepscaler
    --num-rollout 200
-   --rollout-batch-size 32
+   --rollout-batch-size 8
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 1
-   --global-batch-size 256
+   --global-batch-size 64
    --balance-data
 )
 
 EVAL_ARGS=(
-   --eval-interval 50
-   --eval-prompt-data aime /path/to/aime-2024/aime-2024.jsonl
-   --n-samples-per-eval-prompt 16
-   --eval-max-response-len 16384
-   --eval-top-p 1
+    --eval-interval 50
+    --eval-prompt-data aime /path/to/aime-2024/aime-2024.jsonl
+    --n-samples-per-eval-prompt 16
+    --eval-max-response-len 16384
+    --eval-top-p 1
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 4
+   --tensor-model-parallel-size 2
+   --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
-   --expert-model-parallel-size 1
+   --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -104,15 +106,15 @@ PERF_ARGS=(
    --recompute-num-layers 1
 
    --micro-batch-size 1
-   --use-dynamic-batch-size
+   --qkv-format bshd
    --max-tokens-per-gpu 9216
 )
 
 GRPO_ARGS=(
    --advantage-estimator grpo
-   --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
+   --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
@@ -131,11 +133,11 @@ OPTIMIZER_ARGS=(
 )
 
 VLLM_ARGS=(
-   --rollout-num-gpus-per-engine 4
+   --rollout-num-gpus-per-engine 2
    --vllm-gpu-memory-utilization 0.7
    --vllm-enable-sleep-mode
    --vllm-weight-sync-mode native
-   --vllm-max-model-len 16384
+   --vllm-enforce-eager
 )
 
 MISC_ARGS=(
@@ -147,39 +149,34 @@ MISC_ARGS=(
    --use-flash-attn
 )
 
-CUSTOM_ARGS=(
-   --custom-generate-function-path generate_with_retool.generate
-   --custom-rm-path generate_with_retool.reward_func
-)
-
 # launch the master node of ray in container
 unset https_proxy http_proxy proxy
 ray start --head \
-	--temp-dir="${RAY_TMPDIR}" \
-	--port="${RAY_PORT}" \
-	--dashboard-port="${RAY_DASHBOARD_PORT}" \
-	--dashboard-agent-listen-port="${RAY_AGENT_PORT}" \
-	--node-ip-address 127.0.0.1 \
-	--num-gpus 0 \
-	--resources "{\"NPU\": $NUM_NPUS}" \
-	--disable-usage-stats \
-	--dashboard-host=0.0.0.0
+	  --temp-dir="${RAY_TMPDIR}" \
+	  --port="${RAY_PORT}" \
+	  --dashboard-port="${RAY_DASHBOARD_PORT}" \
+	  --dashboard-agent-listen-port="${RAY_AGENT_PORT}" \
+	  --node-ip-address 127.0.0.1 \
+	  --num-gpus 0 \
+	  --resources "{\"NPU\": $NUM_NPUS}" \
+	  --disable-usage-stats \
+	  --dashboard-host=0.0.0.0
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON=$(cat << 'EOF'
 {
   "env_vars": {
-    "PYTHONPATH": "${VIME_DIR}:${VIME_DIR}/examples/retool:/root/Megatron-LM:/root/vllm:/root/vllm-ascend:/root/Megatron-Bridge:/root/mbridge:/root/MegatronAdaptor:/root/TransformerEngineNPU:/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:/usr/local/Ascend/ascend-toolkit/latest/tools/ms_fmk_transplt/torch_npu_bridge",
+    "PYTHONPATH": "${VIME_DIR}:/root/Megatron-LM:/vllm-workspace/vllm:/vllm-workspace/vllm-ascend:/root/Megatron-Bridge/src:/root/mbridge:/root/MegatronAdaptor:/root/TransformerEngineNPU:/usr/local/Ascend/ascend-toolkit/latest/python/site-packages",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     "HCCL_HOST_SOCKET_PORT_RANGE": "60000-60050",
     "HCCL_NPU_SOCKET_PORT_RANGE": "61000-61050",
     "HCCL_CONNECT_TIMEOUT": "7200",
     "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False",
-    "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES": "1",
     "VLLM_DISABLE_COMPILE_CACHE": "1",
     "TRANSFORMERS_VERBOSITY": "error",
     "RUST_LOG": "vllm_router_rs=warn",
-    "LD_LIBRARY_PATH": "/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/ascend-toolkit/latest/lib64:/usr/local/Ascend/ascend-toolkit/latest/compiler/lib64/plugin/opskernel:/usr/local/Ascend/ascend-toolkit/latest/compiler/lib64/plugin/nnengine:/usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/:/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/lib:/usr/local/Ascend/cann/lib64:/usr/local/Ascend/cann/aarch64-linux/devlib"
+    "ASCEND_CUSTOM_OPP_PATH": "/vllm-workspace/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer:/usr/local/Ascend/cann-9.0.0/opp/vendors/fla_npu_transformer",
+    "LD_LIBRARY_PATH": "/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/ascend-toolkit/latest/lib64:/usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/:/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/lib:/usr/local/Ascend/cann/lib64:/usr/local/Ascend/cann/aarch64-linux/devlib"
   }
 }
 EOF
@@ -202,5 +199,4 @@ ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PORT}" \
    ${EVAL_ARGS[@]} \
    ${VLLM_ARGS[@]} \
    ${MISC_ARGS[@]} \
-   ${CUSTOM_ARGS[@]} \
    2>&1 | tee "${LOG_FILE}"
