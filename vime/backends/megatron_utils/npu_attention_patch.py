@@ -1,6 +1,3 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torch_npu
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.enums import AttnMaskType
@@ -82,52 +79,3 @@ def npu_dot_product_attention_forward(
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 
 DotProductAttention.forward = npu_dot_product_attention_forward
-
-
-# Qwen3.5 training interfaces; keep the public model and saved parameter layout.
-def get_chunk_gated_delta_rule(backend: str):
-    if backend != "fla":
-        raise ValueError(f"Qwen3.5 NPU GDN requires backend 'fla', got {backend!r}")
-    # Bind directly to the existing NPU implementation, not Adaptor's dummy FLA namespace.
-    from megatron.core.ssm.chunk_gated_delta_rule import chunk_gated_delta_rule
-
-    return chunk_gated_delta_rule
-
-
-class ShortConvolution(nn.Conv1d):
-    """Training-only FLA interface with HF's [channels, 1, kernel] weight."""
-
-    def __init__(self, hidden_size, kernel_size, bias=False):
-        super().__init__(hidden_size, hidden_size, kernel_size, groups=hidden_size, bias=bias)
-
-    def forward(self, x, cu_seqlens=None):
-        from megatron.core.ssm.triton.causal_conv1d import causal_conv1d
-
-        return causal_conv1d(
-            x=x,
-            # The NPU kernel uses [kernel, channels]; keep the saved Parameter
-            # in HF/FLA's [channels, 1, kernel] layout and transform only its view.
-            weight=self.weight.squeeze(1).t().contiguous(),
-            bias=self.bias,
-            activation="silu",
-            cu_seqlens=cu_seqlens,
-        )
-
-
-class FusedRMSNormGated(nn.Module):
-    """FLA's norm-before-SiLU-gate semantics, with FP32 intermediates on NPU.
-
-    The interface name is retained; this implementation uses torch autograd,
-    not a CUDA fused kernel. The weight is multiplicative, not layernorm-1p.
-    """
-
-    def __init__(self, hidden_size, eps=1e-6, activation="silu", device=None, dtype=None):
-        super().__init__()
-        if activation not in ("silu", "swish"):
-            raise ValueError(f"Unsupported NPU GDN norm activation: {activation!r}")
-        self.weight = nn.Parameter(torch.ones(hidden_size, device=device, dtype=dtype))
-        self.eps = eps
-
-    def forward(self, x, z):
-        normalized = x.float() * torch.rsqrt(x.float().square().mean(dim=-1, keepdim=True) + self.eps)
-        return (normalized * self.weight.float() * F.silu(z.float())).to(x.dtype)

@@ -9,24 +9,15 @@ from megatron.core.transformer.transformer_block import get_num_layers_to_build
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from transformers.activations import ACT2FN
 
-from vime.platforms import current_platform
 from vime.utils import accelerator
 
-if current_platform().is_npu:
-    from vime.backends.megatron_utils.npu_attention_patch import (
-        FusedRMSNormGated,
-        ShortConvolution,
-        get_chunk_gated_delta_rule,
-    )
-else:
-    try:
-        from fla.modules import FusedRMSNormGated, ShortConvolution
-    except ImportError:
-        pass
-
-    from .qwen_gdn_backend import get_chunk_gated_delta_rule
+try:
+    from fla.modules import FusedRMSNormGated, ShortConvolution
+except ImportError:
+    pass
 
 from .hf_attention import HuggingfaceAttention, _load_hf_config
+from .qwen_gdn_backend import get_chunk_gated_delta_rule
 
 
 def _get_text_config(hf_config):

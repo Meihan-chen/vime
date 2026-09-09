@@ -2,13 +2,17 @@
 
 This guide provides instructions for installing Vime with NPU support, including all required dependencies and patches.
 
-> S7 integration status: the training-stack revisions below are candidates from
-> Ascend PRs #385/#409, not a validated replacement for the S6 environment.
-> Native HF loading is retained; do not restore Bridge loading or run these
-> installation steps over an existing patched environment without a dependency
-> review. `Dockerfile.npu` still has a historical v0.23 base-image default and is
-> not yet a reproducible image for the frozen serving pair below. Qwen3.5 GDN,
-> convolution and gated-norm dispatch still require native-path NPU validation.
+> S7 closeout (2026-09-09): retain Ascend #385 (training stack) and #396
+> (torch_dist/ref-load), with native HF loading and main's shared orchestration.
+> Revert #409 (`f5b84916`) and its follow-up Qwen3.5 NPU adaptations; defer that
+> model to the next stage in a fresh, matched environment. Main's Qwen3.5 model
+> code is retained. Existing Qwen3-4B, Qwen3-30B-A3B, Qwen3-VL-8B and the 30B
+> torch_dist/ref-load run passed before the Qwen3.5 environment changes; this
+> does not certify a fresh image or a post-revert E2E run. No installed packages
+> or vendor source trees are rolled back as part of this source-only closeout.
+> Post-revert checks: 183 grouped CPU tests passed. Common → NPU Megatron
+> patches and the reverted Bridge patch pass apply checks on their pinned
+> clean source revisions. Serving patches and `docker/patch/latest` are unchanged.
 
 ## Component Version Mapping
 
@@ -17,7 +21,7 @@ This guide provides instructions for installing Vime with NPU support, including
 | vime            | main                                     | [GitHub](https://github.com/vllm-project/vime/tree/main)                                                            |
 | vLLM | e6bfe03ad73a3330cb427885aa90d97a12e1c704 + NPU patch | S6 serving baseline, retained for S7 |
 | vLLM-Ascend | fd815467c221ee600137f6bdd53fe354d5e7c999 + NPU patch | S6 serving baseline, retained for S7 |
-| Megatron-Bridge | 7f0fb3456f8ffe47599b5fd167b454605d85f932 | [GitHub](https://github.com/radixark/Megatron-Bridge)                                                               |
+| Megatron-Bridge | 3fd3768045422d0aa5c97e90a4e6c659aea9acb9 | [GitHub](https://github.com/radixark/Megatron-Bridge)                                                               |
 | Megatron-LM     | 1dcf0dafa884ad52ffb243625717a3471643e087 | [GitHub](https://github.com/NVIDIA/Megatron-LM)                                                                     |
 | MegatronAdaptor | 15582addff3f3d4680e350826fa70d012b475509 | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor)                                                               |
 | TransformerEngineNPU | d743c83d060d5edc48867ecb9e93ec80d81860e4 | [GitCode](https://gitcode.com/Ascend/TransformerEngineNPU)                                                          |
@@ -50,7 +54,7 @@ The source PR used this via `PYTHONPATH` (no editable install) and required
 whether to retain it in the S7 image remains under review.
 
 ```bash
-export MEGATRON_BRIDGE_COMMIT=7f0fb3456f8ffe47599b5fd167b454605d85f932
+export MEGATRON_BRIDGE_COMMIT=3fd3768045422d0aa5c97e90a4e6c659aea9acb9
 export MBRIDGE_COMMIT=89eb10887887bc74853f89a4de258c0702932a1c
 pip install "git+https://github.com/ISEEKYAN/mbridge.git@${MBRIDGE_COMMIT}" --no-deps
 git clone --branch bridge https://github.com/radixark/Megatron-Bridge.git "${WORKSPACE}/Megatron-Bridge"
@@ -145,7 +149,7 @@ upgrade the existing S6 environment; in particular, validate the new NPU kernel
 requirements before changing torch-npu:
 
 ```shell
-pip install torch-npu==2.10.0.post2
+pip install torch-npu==2.10.0
 pip install torchvision==0.25.0
 pip install numpy==1.26.4
 ```

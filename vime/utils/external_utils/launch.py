@@ -11,26 +11,8 @@ the actual `exec_command` calls live in `command_utils`.
 """
 
 import json
-import os
 import shlex
 from dataclasses import dataclass, field
-from pathlib import Path
-
-
-def get_fla_npu_runtime_env():
-    """Resolve OPP before Ray starts: CANN caches its paths during bootstrap.
-
-    Reuse the wheel's resolver (including FLA_NPU_OPP_PATH overrides) and
-    preserve other vendors. Loading it only after Megatron imports is too late.
-    """
-    import fla_npu  # noqa: F401 - resolve/load the installed OPP, without allocating tensors
-
-    return {
-        "ASCEND_CUSTOM_OPP_PATH": os.environ["ASCEND_CUSTOM_OPP_PATH"],
-        # Also opt this job into early worker-side loading, before other custom
-        # op libraries initialize. A path export alone is not sufficient.
-        "FLA_NPU_OPP_PATH": str(Path(os.environ["FLA_NPU_OP_API_LIB"]).parents[2]),
-    }
 
 
 # ── Platform contract ──────────────────────────────────────────────────────
