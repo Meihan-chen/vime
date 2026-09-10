@@ -321,34 +321,119 @@ index c388619f2..38a7d2fb7 100644
                  assert isinstance(self.pcp_manager, AscendPCPManager)
                  self.pcp_manager.vllm_config = self.vllm_config
 diff --git a/vllm_ascend/worker/worker.py b/vllm_ascend/worker/worker.py
-index 6d99ac76a..99738a293 100644
+index 6d99ac76a..b7df4df22 100644
 --- a/vllm_ascend/worker/worker.py
 +++ b/vllm_ascend/worker/worker.py
-@@ -334,7 +334,7 @@ class NPUWorker(WorkerBase):
-         self.weight_transfer_engine.start_weight_update()
+@@ -321,7 +321,48 @@ class NPUWorker(WorkerBase):
+
+     def start_weight_update(self) -> None:
+         """Begin a new weight update; prepares the model for layerwise reload."""
++        with set_current_vllm_config(self.vllm_config):
++            self._start_weight_update()
++
++    def get_draft_model(self) -> nn.Module | None:
++        return self.model_runner.get_draft_model()
++
++    def supports_draft_weight_updates(self) -> bool:
++        engine = self.weight_transfer_engine
++        speculative_config = self.speculative_config
++        get_draft_model = getattr(self.model_runner, "get_draft_model", None)
++        return (
++            engine is not None
++            and engine.supports_draft_weight_update
++            and callable(get_draft_model)
++            and get_draft_model() is not None
++            and speculative_config is not None
++            and speculative_config.draft_model_config is not None
++        )
++
++    def _set_draft_weight_update_target(self) -> None:
++        assert self.weight_transfer_engine is not None
++        draft_model = self.get_draft_model()
++        if draft_model is None:
++            raise RuntimeError("Draft model weight update requested, but no draft model is configured.")
++        speculative_config = self.speculative_config
++        if speculative_config is None or speculative_config.draft_model_config is None:
++            raise RuntimeError("Draft model weight update requested, but no draft model config is configured.")
++        self.weight_transfer_engine.set_weight_update_target(draft_model, speculative_config.draft_model_config)
++
++    def start_draft_weight_update(self) -> None:
++        """Retarget the native engine at the draft model for this session."""
++        with set_current_vllm_config(self.vllm_config):
++            self._start_weight_update(is_draft=True)
++
++    def _start_weight_update(self, is_draft: bool = False) -> None:
+         self._check_weight_transfer_engine()
++        assert self.weight_transfer_engine is not None
++
++        if is_draft and not self.weight_transfer_engine.supports_draft_weight_update:
++            raise RuntimeError(
++                f"{type(self.weight_transfer_engine).__name__} does not support draft model weight updates."
++            )
+
+         if self._weight_update_active:
+             raise RuntimeError(
+@@ -330,11 +371,16 @@ class NPUWorker(WorkerBase):
+
+         self._check_nz_disabled()
+
+-        assert self.weight_transfer_engine is not None
+-        self.weight_transfer_engine.start_weight_update()
++        try:
++            if is_draft:
++                self._set_draft_weight_update_target()
++            self.weight_transfer_engine.start_weight_update()
++        except BaseException:
++            self.weight_transfer_engine.reset_weight_update_target()
++            raise
          self._weight_update_active = True
- 
+
 -    def update_weights(self, update_info: dict) -> None:
 +    def update_weights(self, update_info: dict | list[dict]) -> None:
          """Receive a chunk of weights from the trainer and load them in place."""
          self._check_weight_transfer_engine()
          assert self.weight_transfer_engine is not None
-@@ -344,7 +344,13 @@ class NPUWorker(WorkerBase):
+@@ -343,11 +389,19 @@ class NPUWorker(WorkerBase):
+         if not self._weight_update_active:
              raise RuntimeError("start_weight_update must be called before update_weights.")
- 
-         try:
+
+-        try:
 -            self.weight_transfer_engine.update_weights(update_info)
-+            if isinstance(update_info, list):
-+                parallel_config = self.vllm_config.parallel_config
-+                worker_rank = parallel_config.data_parallel_rank * parallel_config.world_size + self.rank
-+                local_update_info = update_info[worker_rank]
-+            else:
-+                local_update_info = update_info
-+            self.weight_transfer_engine.update_weights(local_update_info)
-         except BaseException:
-             self._weight_update_active = False
-             raise
-@@ -448,7 +454,9 @@ class NPUWorker(WorkerBase):
+-        except BaseException:
+-            self._weight_update_active = False
+-            raise
++        with set_current_vllm_config(self.vllm_config):
++            try:
++                if isinstance(update_info, list):
++                    parallel_config = self.vllm_config.parallel_config
++                    worker_rank = parallel_config.data_parallel_rank * parallel_config.world_size + self.rank
++                    local_update_info = update_info[worker_rank]
++                else:
++                    local_update_info = update_info
++                self.weight_transfer_engine.update_weights(local_update_info)
++            except BaseException:
++                self._weight_update_active = False
++                self.weight_transfer_engine.reset_weight_update_target()
++                raise
+
+     def finish_weight_update(self) -> None:
+         """Finish the current weight update; runs layerwise postprocessing."""
+@@ -357,8 +411,12 @@ class NPUWorker(WorkerBase):
+             raise RuntimeError("start_weight_update must be called before finish_weight_update.")
+
+         assert self.weight_transfer_engine is not None
+-        self.weight_transfer_engine.finish_weight_update()
+-        self._weight_update_active = False
++        with set_current_vllm_config(self.vllm_config):
++            try:
++                self.weight_transfer_engine.finish_weight_update()
++            finally:
++                self._weight_update_active = False
++                self.weight_transfer_engine.reset_weight_update_target()
+
+     def shutdown(self) -> None:
+         if ensure_kv_transfer_shutdown is not None:
+@@ -448,7 +506,9 @@ class NPUWorker(WorkerBase):
          # take current memory snapshot
          self.init_snapshot = MemorySnapshot(device=device)
          self.requested_memory = self.init_snapshot.total_memory * self.cache_config.gpu_memory_utilization
@@ -359,9 +444,9 @@ index 6d99ac76a..99738a293 100644
              GiB = lambda b: round(b / GiB_bytes, 2)
              raise ValueError(
                  f"Free memory on device "
-@@ -597,7 +605,9 @@ class NPUWorker(WorkerBase):
+@@ -597,7 +657,9 @@ class NPUWorker(WorkerBase):
          self.non_torch_memory = profile_result.non_torch_increase
- 
+
          free_gpu_memory = profile_result.after_profile.free_memory
 -        assert self.init_snapshot.free_memory > free_gpu_memory, (
 +        weight_transfer_config = self.vllm_config.weight_transfer_config
@@ -370,9 +455,9 @@ index 6d99ac76a..99738a293 100644
              "Error in memory profiling. "
              f"Initial free memory {GiB(self.init_snapshot.free_memory)} GiB, "
              f"current free memory {GiB(free_gpu_memory)} GiB. "
-@@ -1118,8 +1128,12 @@ class NPUWorker(WorkerBase):
+@@ -1118,8 +1180,12 @@ class NPUWorker(WorkerBase):
              from contextlib import nullcontext
- 
+
              context = nullcontext()  # type: ignore
 -        with context:
 -            self.model_runner.initialize_kv_cache(kv_cache_config)
@@ -382,6 +467,6 @@ index 6d99ac76a..99738a293 100644
 +        else:
 +            with context:
 +                self.model_runner.initialize_kv_cache(kv_cache_config)
- 
+
          # MRV2's scheduler emits new_block_ids_to_zero whenever this flag is
          # set, so its worker-side consumer must use the same condition. Keep the

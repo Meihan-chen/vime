@@ -14,6 +14,8 @@ REPO = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def glm_loader(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path))
+    monkeypatch.delenv("VIME_TEST_GLM_MTP", raising=False)
+    monkeypatch.delenv("VIME_TEST_GLM_EAGER", raising=False)
 
     def load():
         spec = importlib.util.spec_from_file_location("glm_npu_case", REPO / "tests/test_glm4.7_30B_A3B_npu.py")
@@ -47,6 +49,7 @@ def test_glm_g1_uses_native_non_colocate_without_mtp(glm_loader, monkeypatch):
         assert tokens[tokens.index(flag) + 1] == value
     assert "--vllm-enable-expert-parallel" in tokens
     assert "--ci-test" in tokens
+    assert "--vllm-enforce-eager" not in tokens
     assert not {
         "--colocate",
         "--megatron-to-hf-mode",
@@ -57,6 +60,34 @@ def test_glm_g1_uses_native_non_colocate_without_mtp(glm_loader, monkeypatch):
     }.intersection(tokens)
     assert launch["num_gpus_per_node"] == 16
     assert launch["megatron_model_type"] == "glm4.7-30B-A3B"
+
+
+@pytest.mark.parametrize("mtp,eager", [("0", "0"), ("0", "1"), ("1", "0"), ("1", "1")])
+def test_glm_explicit_mtp_and_eager_modes(glm_loader, monkeypatch, mtp, eager):
+    monkeypatch.setenv("VIME_TEST_GLM_MTP", mtp)
+    monkeypatch.setenv("VIME_TEST_GLM_EAGER", eager)
+    glm = glm_loader()
+    launches = []
+    monkeypatch.setattr(glm.U, "execute_train", lambda **kwargs: launches.append(kwargs))
+    glm.execute()
+    tokens = shlex.split(launches[0]["train_args"])
+    assert ("--vllm-enforce-eager" in tokens) == (eager == "1")
+    for flag in (
+        "--mtp-num-layers",
+        "--enable-mtp-training",
+        "--mtp-loss-scaling-factor",
+        "--vllm-speculative-config",
+    ):
+        assert (flag in tokens) == (mtp == "1")
+    if mtp == "1":
+        assert tokens[tokens.index("--mtp-num-layers") + 1] == "1"
+        assert tokens[tokens.index("--mtp-loss-scaling-factor") + 1] == "0.2"
+        assert tokens[tokens.index("--vllm-speculative-config") + 1] == '{"method":"mtp","num_speculative_tokens":1}'
+    assert "--colocate" not in tokens
+    assert "--dspark-enabled" not in tokens
+    assert tokens[tokens.index("--actor-num-gpus-per-node") + 1] == "8"
+    assert tokens[tokens.index("--rollout-num-gpus") + 1] == "8"
+    assert tokens[tokens.index("--rollout-num-gpus-per-engine") + 1] == "4"
 
 
 def test_glm_prepare_preserves_ci_download_defaults(glm_loader, monkeypatch):

@@ -282,10 +282,31 @@ def test_qwen2_moe_parameter_updates_use_the_moe_exporter():
         ("mlp.router.expert_bias", (4,)),
     ],
 )
-def test_glm_lite_native_mla_and_moe_round_trip(rest, shape):
-    name = f"module.module.decoder.layers.1.{rest}"
+@pytest.mark.parametrize("mtp", [False, True])
+def test_glm_lite_native_mla_and_moe_round_trip(rest, shape, mtp):
+    prefix = "mtp.layers.0.transformer_layer" if mtp else "decoder.layers.1"
+    name = f"module.module.{prefix}.{rest}"
     parameter = torch.randn(shape)
     exported = _convert_to_hf_core(_EXPORT_ARGS, "glm4moeliteconfig", name, parameter)
+    loaded = _LOADERS["glm4_moe_lite"](name, Reader(**dict(exported)), _config("glm4_moe_lite"))
+    assert torch.equal(loaded, parameter)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rest,hf_rest,shape",
+    [
+        ("eh_proj.weight", "eh_proj.weight", (8, 16)),
+        ("enorm.weight", "enorm.weight", (8,)),
+        ("hnorm.weight", "hnorm.weight", (8,)),
+        ("final_layernorm.weight", "shared_head.norm.weight", (8,)),
+    ],
+)
+def test_glm_lite_native_mtp_projection_and_norm_round_trip(rest, hf_rest, shape):
+    name = f"module.module.mtp.layers.0.{rest}"
+    parameter = torch.randn(shape)
+    exported = _convert_to_hf_core(_EXPORT_ARGS, "glm4moeliteconfig", name, parameter)
+    assert [key for key, _ in exported] == [f"model.layers.{_EXPORT_ARGS.num_layers}.{hf_rest}"]
     loaded = _LOADERS["glm4_moe_lite"](name, Reader(**dict(exported)), _config("glm4_moe_lite"))
     assert torch.equal(loaded, parameter)
 

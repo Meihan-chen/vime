@@ -140,3 +140,19 @@ index a8f8023cf2..d62f39a2b8 100644
 +    "expert_ids_per_ep_rank",
      "e_score_correction_bias",
  }
+diff --git a/vllm/model_executor/models/glm4_moe_lite_mtp.py b/vllm/model_executor/models/glm4_moe_lite_mtp.py
+index 1d30a0eaf6..37239f7f62 100644
+--- a/vllm/model_executor/models/glm4_moe_lite_mtp.py
++++ b/vllm/model_executor/models/glm4_moe_lite_mtp.py
+@@ -129,6 +129,10 @@ class Glm4MoeLiteMultiTokenPredictorLayer(nn.Module):
+     ) -> torch.Tensor:
+         assert inputs_embeds is not None
+         # masking inputs at position 0, as not needed by MTP
+-        inputs_embeds[positions == 0] = 0
++        # Avoid dynamic bool indexing during NPU graph capture.
++        mask = (positions == 0).unsqueeze(-1)
++        inputs_embeds = torch.where(
++            mask, torch.zeros_like(inputs_embeds), inputs_embeds
++        )
+         inputs_embeds = self.enorm(inputs_embeds)
+         previous_hidden_states = self.hnorm(previous_hidden_states)

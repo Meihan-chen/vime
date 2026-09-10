@@ -21,6 +21,9 @@ def prepare():
 
 
 def execute():
+    # Default to G1; G2 and eager diagnostics are explicit, independent opt-ins.
+    enable_mtp = os.environ.get("VIME_TEST_GLM_MTP", "0") == "1"
+    enforce_eager = os.environ.get("VIME_TEST_GLM_EAGER", "0") == "1"
     model_dir = shlex.quote(MODEL_DIR)
     prompt_data = shlex.quote(f"{DATASET_DIR}/dapo-math-17k.jsonl")
 
@@ -38,7 +41,7 @@ def execute():
         "--num-rollout 2 "
         "--rollout-batch-size 4 "
         "--n-samples-per-prompt 4 "
-        "--rollout-max-response-len 2048 "
+        "--rollout-max-response-len 128 "
         "--rollout-temperature 1 "
         "--global-batch-size 16 "
         "--balance-data "
@@ -83,7 +86,6 @@ def execute():
         "--use-precision-aware-optimizer "
     )
 
-    # G1 validates the main model only; training and serving MTP are deferred to G2.
     vllm_args = (
         "--vllm-additional-config '{\"weight_nz_mode\":0}' "
         "--rollout-num-gpus-per-engine 4 "
@@ -91,6 +93,12 @@ def execute():
         "--vllm-enable-expert-parallel "
         "--vllm-cudagraph-capture-sizes 1 2 4 8 "
     )
+    mtp_args = ""
+    if enable_mtp:
+        mtp_args = "--mtp-num-layers 1 --enable-mtp-training --mtp-loss-scaling-factor 0.2 "
+        vllm_args += '--vllm-speculative-config \'{"method":"mtp","num_speculative_tokens":1}\' '
+    if enforce_eager:
+        vllm_args += "--vllm-enforce-eager "
 
     model_args = (
         # GLM-4.7-Flash has no HF rope_scaling; MLA otherwise defaults to YaRN.
@@ -118,6 +126,7 @@ def execute():
         + parallel_args
         + grpo_args
         + optimizer_args
+        + mtp_args
         + vllm_args
         + model_args
         + runtime_args
