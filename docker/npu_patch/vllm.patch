@@ -16,11 +16,27 @@ index cb61bca..5c076d5 100644
 --- a/vllm/v1/core/sched/async_scheduler.py
 +++ b/vllm/v1/core/sched/async_scheduler.py
 @@ -51,7 +51,7 @@ class AsyncScheduler(Scheduler):
- 
+
          # Update the number of output placeholders.
          request.num_output_placeholders -= len(new_token_ids)
 -        assert request.num_output_placeholders >= 0
 +        request.num_output_placeholders = max(0, request.num_output_placeholders)
- 
+
          # Cache the new tokens. Preempted requests should be skipped.
          if status_before_update == RequestStatus.RUNNING:
+diff --git a/vllm/model_executor/models/glm4_moe_lite_mtp.py b/vllm/model_executor/models/glm4_moe_lite_mtp.py
+index 596cb48..8c30495 100644
+--- a/vllm/model_executor/models/glm4_moe_lite_mtp.py
++++ b/vllm/model_executor/models/glm4_moe_lite_mtp.py
+@@ -126,7 +126,10 @@ class Glm4MoeLiteMultiTokenPredictorLayer(nn.Module):
+     ) -> torch.Tensor:
+         assert inputs_embeds is not None
+         # masking inputs at position 0, as not needed by MTP
+-        inputs_embeds[positions == 0] = 0
++        # torch.where (element-wise) replaces bool-mask index to stay
++        # cudagraph-capturable on NPU (aclnnNonzeroV2 fails under capture).
++        mask = (positions == 0).unsqueeze(-1)
++        inputs_embeds = torch.where(mask, torch.zeros_like(inputs_embeds), inputs_embeds)
+         inputs_embeds = self.enorm(inputs_embeds)
+         previous_hidden_states = self.hnorm(previous_hidden_states)
+
