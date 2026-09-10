@@ -12,6 +12,82 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
+def glm_loader(monkeypatch, tmp_path):
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+
+    def load():
+        spec = importlib.util.spec_from_file_location("glm_npu_case", REPO / "tests/test_glm4.7_30B_A3B_npu.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    return load
+
+
+def test_glm_g1_uses_native_non_colocate_without_mtp(glm_loader, monkeypatch):
+    glm = glm_loader()
+    launches = []
+    monkeypatch.setattr(glm.U, "execute_train", lambda **kwargs: launches.append(kwargs))
+    glm.execute()
+    launch = launches[0]
+    tokens = shlex.split(launch["train_args"])
+    expected = {
+        "--hf-checkpoint": glm.MODEL_DIR,
+        "--ref-load": glm.MODEL_DIR,
+        "--actor-num-gpus-per-node": "8",
+        "--rollout-num-gpus": "8",
+        "--rollout-num-gpus-per-engine": "4",
+        "--tensor-model-parallel-size": "4",
+        "--expert-model-parallel-size": "8",
+        "--rope-type": "rope",
+        "--vllm-additional-config": '{"weight_nz_mode":0}',
+        "--num-rollout": "2",
+    }
+    for flag, value in expected.items():
+        assert tokens[tokens.index(flag) + 1] == value
+    assert "--vllm-enable-expert-parallel" in tokens
+    assert "--ci-test" in tokens
+    assert not {
+        "--colocate",
+        "--megatron-to-hf-mode",
+        "--mtp-num-layers",
+        "--enable-mtp-training",
+        "--vllm-speculative-config",
+        "--dspark-enabled",
+    }.intersection(tokens)
+    assert launch["num_gpus_per_node"] == 16
+    assert launch["megatron_model_type"] == "glm4.7-30B-A3B"
+
+
+def test_glm_prepare_preserves_ci_download_defaults(glm_loader, monkeypatch):
+    glm = glm_loader()
+    commands = []
+    monkeypatch.setattr(glm.U, "exec_command", commands.append)
+    glm.prepare()
+    assert commands == [
+        f"mkdir -p {shlex.quote(f'{glm.TEST_ROOT}/models')} {shlex.quote(f'{glm.TEST_ROOT}/datasets')}",
+        f"hf download zai-org/GLM-4.7-Flash --local-dir {shlex.quote(glm.MODEL_DIR)}",
+        "hf download --repo-type dataset zhuzilin/dapo-math-17k " f"--local-dir {shlex.quote(glm.DATASET_DIR)}",
+    ]
+
+
+def test_glm_shell_keeps_g1_model_and_serving_configuration():
+    script = (REPO / "scripts/run-glm4.7-30B-A3B-npu.sh").read_text()
+    assert 'source "${SCRIPT_DIR}/models/glm4.7-30B-A3B.sh"' in script
+    assert "--rope-type rope" in script
+    assert "--vllm-additional-config '{\"weight_nz_mode\":0}'" in script
+    assert "--vllm-enable-expert-parallel" in script
+    for flag in (
+        "--colocate",
+        "--megatron-to-hf-mode",
+        "--mtp-num-layers",
+        "--enable-mtp-training",
+        "--vllm-speculative-config",
+    ):
+        assert flag not in script
+
+
+@pytest.fixture
 def qwen30(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     (tmp_path / "models").mkdir()

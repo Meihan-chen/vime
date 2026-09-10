@@ -224,7 +224,7 @@ def test_qwen3_omni_encoder_mapping_is_replicated():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("model_name", ["deepseekv32config", "kimik2config"])
+@pytest.mark.parametrize("model_name", ["deepseekv32config", "kimik2config", "glm4moeliteconfig"])
 def test_deepseek_family_parameter_updates_use_the_direct_exporter(model_name):
     parameter = torch.randn(8, 8)
 
@@ -257,6 +257,37 @@ def test_qwen2_moe_parameter_updates_use_the_moe_exporter():
     ]
     assert torch.equal(converted[0][1], parameter[:6])
     assert torch.equal(converted[1][1], parameter[6:])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rest,shape",
+    [
+        ("input_layernorm.weight", (8,)),
+        ("self_attention.linear_q_down_proj.weight", (4, 8)),
+        ("self_attention.linear_q_up_proj.weight", (8, 4)),
+        ("self_attention.linear_q_up_proj.layer_norm_weight", (4,)),
+        ("self_attention.linear_kv_down_proj.weight", (6, 8)),
+        ("self_attention.linear_kv_up_proj.weight", (8, 4)),
+        ("self_attention.linear_kv_up_proj.layer_norm_weight", (4,)),
+        ("self_attention.linear_proj.weight", (8, 8)),
+        ("pre_mlp_layernorm.weight", (8,)),
+        ("mlp.linear_fc1.weight", (12, 8)),
+        ("mlp.linear_fc2.weight", (8, 6)),
+        ("mlp.shared_experts.linear_fc1.weight", (12, 8)),
+        ("mlp.shared_experts.linear_fc2.weight", (8, 6)),
+        ("mlp.experts.linear_fc1.weight3", (12, 8)),
+        ("mlp.experts.linear_fc2.weight3", (8, 6)),
+        ("mlp.router.weight", (4, 8)),
+        ("mlp.router.expert_bias", (4,)),
+    ],
+)
+def test_glm_lite_native_mla_and_moe_round_trip(rest, shape):
+    name = f"module.module.decoder.layers.1.{rest}"
+    parameter = torch.randn(shape)
+    exported = _convert_to_hf_core(_EXPORT_ARGS, "glm4moeliteconfig", name, parameter)
+    loaded = _LOADERS["glm4_moe_lite"](name, Reader(**dict(exported)), _config("glm4_moe_lite"))
+    assert torch.equal(loaded, parameter)
 
 
 @pytest.mark.unit
