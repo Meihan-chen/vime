@@ -21,13 +21,10 @@ def prepare():
 
 
 def execute():
-    # Default to G1; G2 and eager diagnostics are explicit, independent opt-ins.
-    enable_mtp = os.environ.get("VIME_TEST_GLM_MTP", "0") == "1"
-    enforce_eager = os.environ.get("VIME_TEST_GLM_EAGER", "0") == "1"
     model_dir = shlex.quote(MODEL_DIR)
     prompt_data = shlex.quote(f"{DATASET_DIR}/dapo-math-17k.jsonl")
 
-    # G1 loads HF weights through the native loader, without torch_dist conversion.
+    # Load HF weights through the native loader, without torch_dist conversion.
     checkpoint_args = f"--hf-checkpoint {model_dir} --load {model_dir} --ref-load {model_dir} --no-load-optim "
 
     # Smoke-scaled rollout (num-rollout/batch/n-samples trimmed like test_qwen3_30B_A3B_npu).
@@ -92,13 +89,9 @@ def execute():
         "--vllm-gpu-memory-utilization 0.7 "
         "--vllm-enable-expert-parallel "
         "--vllm-cudagraph-capture-sizes 1 2 4 8 "
+        '--vllm-speculative-config \'{"method":"mtp","num_speculative_tokens":1}\' '
     )
-    mtp_args = ""
-    if enable_mtp:
-        mtp_args = "--mtp-num-layers 1 --enable-mtp-training --mtp-loss-scaling-factor 0.2 "
-        vllm_args += '--vllm-speculative-config \'{"method":"mtp","num_speculative_tokens":1}\' '
-    if enforce_eager:
-        vllm_args += "--vllm-enforce-eager "
+    mtp_args = "--mtp-num-layers 1 --enable-mtp-training --mtp-loss-scaling-factor 0.2 "
 
     model_args = (
         # GLM-4.7-Flash has no HF rope_scaling; MLA otherwise defaults to YaRN.

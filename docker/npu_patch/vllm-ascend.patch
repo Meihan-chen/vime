@@ -72,7 +72,7 @@ index 023ffd1ae..7b184e279 100644
 +    """Stateful control plane over the existing HCCL broadcast transport.
 +
 +    Every trainer rank replays the source collectives. Only rank 0 opens the
-+    transfer communicator and drives worker RPCs. The frozen receiver expects
++    transfer communicator and drives worker RPCs. The HCCL receiver expects
 +    packed geometry on each update, so derive it from the trainer init info.
 +    """
 +
