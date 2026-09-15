@@ -36,7 +36,6 @@ CKPT_ARGS=(
    --hf-checkpoint ${DATA_ROOT}/weights/Qwen3-30B-A3B/
    --load ${DATA_ROOT}/weights/Qwen3-30B-A3B/
    --ref-load ${DATA_ROOT}/weights/Qwen3-30B-A3B/
-   --megatron-to-hf-mode bridge
 )
 
 ROLLOUT_ARGS=(
@@ -103,6 +102,7 @@ OPTIMIZER_ARGS=(
 )
 
 VLLM_ARGS=(
+   --vllm-additional-config '{"weight_nz_mode":0}'
    --rollout-num-gpus-per-engine 4
    --vllm-gpu-memory-utilization 0.7
    --vllm-cudagraph-capture-sizes 1 2 4 8 $(seq 16 8 256)
@@ -119,7 +119,7 @@ MISC_ARGS=(
    --no-gradient-accumulation-fusion
 )
 
-ray start --head --node-ip-address 127.0.0.1 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --num-gpus 0 --resources '{"NPU": 16}' --node-ip-address 127.0.0.1 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 ray job submit --address="http://127.0.0.1:8265" \
    -- python3 train.py \
