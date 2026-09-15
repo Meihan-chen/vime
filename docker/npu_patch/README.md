@@ -1,155 +1,150 @@
-# Vime NPU Patch Installation Guide
+# NPU patch developer guide
 
-This guide provides instructions for installing Vime with NPU support, including all required dependencies and patches.
+This directory contains the vendor patches needed by Vime's Ascend backend.
+Keep shared training, model-loading and rollout logic in Vime's mainline
+interfaces; use these patches for changes that belong in the vendor runtime.
 
-> S7 closeout (2026-09-09): retain Ascend #385 (training stack) and #396
-> (torch_dist/ref-load), with native HF loading and main's shared orchestration.
-> Revert #409 (`f5b84916`) and its follow-up Qwen3.5 NPU adaptations; defer that
-> model to the next stage in a fresh, matched environment. Main's Qwen3.5 model
-> code is retained. Existing Qwen3-4B, Qwen3-30B-A3B, Qwen3-VL-8B and the 30B
-> torch_dist/ref-load run passed before the Qwen3.5 environment changes; this
-> does not certify a fresh image or a post-revert E2E run. No installed packages
-> or vendor source trees are rolled back as part of this source-only closeout.
-> Post-revert checks: 183 grouped CPU tests passed. Common → NPU Megatron
-> patches and the reverted Bridge patch pass apply checks on their pinned
-> clean source revisions. Serving patches and `docker/patch/latest` are unchanged.
+## Build and source baselines
 
-## Component Version Mapping
+[Dockerfile.npu](../Dockerfile.npu) is the executable build recipe.
+[series.conf](./series.conf) defines the patch application order and the
+source paths used by CI to reconcile a checkout with an existing image.
+Update these files together when changing dependencies or patch delivery.
 
-| Component       | Version/Commit                           | Source                                                                                                              |
-| --------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| vime            | main                                     | [GitHub](https://github.com/vllm-project/vime/tree/main)                                                            |
-| vLLM | e6bfe03ad73a3330cb427885aa90d97a12e1c704 + NPU patch | S6 serving baseline, retained for S7 |
-| vLLM-Ascend | fd815467c221ee600137f6bdd53fe354d5e7c999 + NPU patch | S6 serving baseline, retained for S7 |
-| Megatron-Bridge | 3fd3768045422d0aa5c97e90a4e6c659aea9acb9 | [GitHub](https://github.com/radixark/Megatron-Bridge)                                                               |
-| Megatron-LM     | 1dcf0dafa884ad52ffb243625717a3471643e087 | [GitHub](https://github.com/NVIDIA/Megatron-LM)                                                                     |
-| MegatronAdaptor | 15582addff3f3d4680e350826fa70d012b475509 | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor)                                                               |
-| TransformerEngineNPU | d743c83d060d5edc48867ecb9e93ec80d81860e4 | [GitCode](https://gitcode.com/Ascend/TransformerEngineNPU)                                                          |
-| MindSpeed       | fc63de5c48426dd019c3b3f39e65f5bdf56e4086 | [GitCode](https://gitcode.com/Ascend/MindSpeed)                                                                     |
-| HDK             | 25.3.RC1                                 | [Ascend](https://www.hiascend.com/hardware/firmware-drivers/commercial?product=7\&model=33)                         |
-| CANN            | 9.0.0                                    | [Ascend](https://www.hiascend.com/developer/download/community/result?module=cann\&cann=9.0.0\&product=7\&model=33) |
+The current recipe uses the base image
+`quay.io/atlas-ci/vllm-ascend:v0.28.0-fd81546-a3`.
+The serving sources below must match the installed compiled extensions and OPP;
+an editable install or a source checkout alone does not rebuild those binaries.
 
-## Preparing the Running Environment
+| Component | Source revision |
+| --- | --- |
+| vLLM | `e6bfe03ad73a3330cb427885aa90d97a12e1c704` |
+| vLLM-Ascend | `fd815467c221ee600137f6bdd53fe354d5e7c999` |
+| Megatron-LM | `1dcf0dafa884ad52ffb243625717a3471643e087` |
+| Megatron-Bridge | `3fd3768045422d0aa5c97e90a4e6c659aea9acb9` |
+| MindSpeed | `fc63de5c48426dd019c3b3f39e65f5bdf56e4086` |
+| MegatronAdaptor | `15582addff3f3d4680e350826fa70d012b475509` |
+| TransformerEngineNPU | `d743c83d060d5edc48867ecb9e93ec80d81860e4` |
+| mbridge | `89eb10887887bc74853f89a4de258c0702932a1c` |
 
-Run the steps below in a Python 3.12 environment with CANN 9.0.0. A
-`quay.io/ascend/vllm-ascend:nightly-main-a3` container can be used as the base.
+The Dockerfile preserves the base image's serving package versions using pip
+constraints while installing training dependencies. Keep torch, torch-npu,
+Triton, CANN and compiled vendor operators compatible; do not independently
+upgrade them to satisfy an unrelated package installation.
 
-```bash
-export WORKSPACE=/root
-cd "${WORKSPACE}"
-```
+Vime uses native HF loading/export for the supported NPU model paths.
+Megatron-Bridge and mbridge remain in the image recipe as separate dependencies;
+their presence does not mean that model loading uses Bridge. Removing those
+dependencies requires checking indirect imports and checkpoint tooling.
 
-Vime's Ascend NPU adaptation lives on the **`ascend`** branch, so clone that
-branch (not `main`):
+To build from the repository root, set `VIME_REVISION` to an immutable commit
+available from the repository fetched by the Dockerfile:
 
 ```bash
-git clone --branch ascend https://github.com/vllm-project/vime.git "${WORKSPACE}/vime"
-export PATCH_DIR="${WORKSPACE}/vime/docker/npu_patch"
+docker build -f docker/Dockerfile.npu \
+  --build-arg VIME_COMMIT="$VIME_REVISION" \
+  -t vime-npu:dev .
 ```
 
-#### 1. Megatron-Bridge (legacy build dependency, not the native loader)
+The Dockerfile fetches Vime from `vllm-project/vime`; a fork-only commit is not
+necessarily available there. The build context supplies the patch files while
+`VIME_COMMIT` selects the installed Vime source. Keep those two inputs aligned.
+The host driver and exposed NPU devices must also match the container stack.
 
-The source PR used this via `PYTHONPATH` (no editable install) and required
-`nvidia-modelopt`. This is not a prerequisite for Vime's native HF loader;
-whether to retain it in the S7 image remains under review.
+## Patch inventory and order
+
+| Order | Patch | Target | Purpose |
+| --- | --- | --- | --- |
+| 1 | [vllm.patch](./vllm.patch) | vLLM | Token-in/token-out serving behavior, weight-reload metadata and the GLM MTP graph-compatible mask. |
+| 2 | [vllm-ascend.patch](./vllm-ascend.patch) | vLLM-Ascend | Stateful HCCL and packed IPC transfer, reload lifecycle, main/draft update targets, and KV/control-memory allocation boundaries. |
+| 3 | [common megatron.patch](../patch/latest/megatron.patch) | Megatron-LM | Shared Vime Megatron changes; copied into the image as `megatron-common.patch`. |
+| 4 | [megatron.patch](./megatron.patch) | Megatron-LM | NPU-specific changes on top of the common patch, including training memory and operator compatibility. |
+| 5 | [megatron-bridge.patch](./megatron-bridge.patch) | Megatron-Bridge | Compatibility for the Bridge dependency retained in the image. |
+| 6 | [mindspeed.patch](./mindspeed.patch) | MindSpeed | NPU feature, argument, attention and patch-registration compatibility. |
+
+The common Megatron patch must be applied **before** the NPU Megatron patch.
+Do not duplicate common hunks in the NPU patch or apply all patches from
+`docker/patch/latest` indiscriminately: only the common Megatron patch is
+included by this NPU recipe.
+
+On clean source trees at the pinned revisions, check each patch before applying
+it. For example, using the directory layout from the Dockerfile:
 
 ```bash
-export MEGATRON_BRIDGE_COMMIT=3fd3768045422d0aa5c97e90a4e6c659aea9acb9
-export MBRIDGE_COMMIT=89eb10887887bc74853f89a4de258c0702932a1c
-pip install "git+https://github.com/ISEEKYAN/mbridge.git@${MBRIDGE_COMMIT}" --no-deps
-git clone --branch bridge https://github.com/radixark/Megatron-Bridge.git "${WORKSPACE}/Megatron-Bridge"
-git -C "${WORKSPACE}/Megatron-Bridge" checkout "${MEGATRON_BRIDGE_COMMIT}"
+VIME_PATCH_DIR="$PWD/docker/npu_patch"
 
-git -C "${WORKSPACE}/Megatron-Bridge" apply --whitespace=nowarn "${PATCH_DIR}/megatron-bridge.patch"
+git -C /vllm-workspace/vllm apply --check "$VIME_PATCH_DIR/vllm.patch"
+git -C /vllm-workspace/vllm apply "$VIME_PATCH_DIR/vllm.patch"
 
-pip install --no-build-isolation "nvidia-modelopt[torch]>=0.37.0"
+git -C /vllm-workspace/vllm-ascend apply --check "$VIME_PATCH_DIR/vllm-ascend.patch"
+git -C /vllm-workspace/vllm-ascend apply "$VIME_PATCH_DIR/vllm-ascend.patch"
+
+git -C /root/Megatron-LM apply --check "$PWD/docker/patch/latest/megatron.patch"
+git -C /root/Megatron-LM apply "$PWD/docker/patch/latest/megatron.patch"
+git -C /root/Megatron-LM apply --check "$VIME_PATCH_DIR/megatron.patch"
+git -C /root/Megatron-LM apply "$VIME_PATCH_DIR/megatron.patch"
+
+git -C /root/Megatron-Bridge apply --check "$VIME_PATCH_DIR/megatron-bridge.patch"
+git -C /root/Megatron-Bridge apply "$VIME_PATCH_DIR/megatron-bridge.patch"
+
+git -C /root/MindSpeed apply --check "$VIME_PATCH_DIR/mindspeed.patch"
+git -C /root/MindSpeed apply "$VIME_PATCH_DIR/mindspeed.patch"
 ```
 
-#### 2. Megatron-LM
+Do not rerun these commands on already-patched trees or discard unrelated
+working-tree changes to make a patch apply. Use clean worktrees for rebasing.
+After source changes affecting extensions, rebuild the affected binaries using
+the matching vendor build instructions before testing.
 
-```bash
-export MEGATRON_COMMIT=1dcf0dafa884ad52ffb243625717a3471643e087
-git clone https://github.com/NVIDIA/Megatron-LM.git "${WORKSPACE}/Megatron-LM"
-git -C "${WORKSPACE}/Megatron-LM" checkout "${MEGATRON_COMMIT}"
+## Maintaining a patch
 
-git -C "${WORKSPACE}/Megatron-LM" apply --whitespace=nowarn "${WORKSPACE}/vime/docker/patch/latest/megatron.patch"
-git -C "${WORKSPACE}/Megatron-LM" apply --whitespace=nowarn "${PATCH_DIR}/megatron.patch"
+1. Start from the pinned vendor revision in a clean worktree. For the NPU
+   Megatron patch, apply the common patch first.
+2. Rebase only the necessary vendor changes. Prefer an upstream implementation
+   when it already satisfies Vime's contract; avoid copying Vime orchestration
+   into the vendor patch.
+3. Keep vendor regression tests separate from the production patch payload.
+   Validate changed contracts in the vendor repository and the corresponding
+   Vime tests.
+4. Verify clean-base application and reverse application. For Megatron, check
+   the common and NPU patches as an ordered pair.
+5. When adding, deleting or renaming a patch, update Dockerfile COPY/apply
+   operations and `series.conf` in the same change. Do not introduce
+   patch-specific branches into the CI reconciler.
+6. When changing source baselines, also update the build recipe, this table,
+   dependencies and any affected compiled operators.
 
-pip install --no-deps --no-build-isolation -e "${WORKSPACE}/Megatron-LM"
-```
+CI reconciliation uses the image's saved patch bytes under `/opt/npu_patch`
+to reverse the old series, then applies the checkout's series. Reversal is in
+reverse order. This mechanism updates patches, not vendor source revisions or
+installed packages; a source/binary baseline change requires a matching image.
 
-#### 3. MegatronAdaptor and TransformerEngineNPU
+## Runtime integration and validation
 
-The NPU training stack now uses the two source repositories directly. The mainline Megatron patch is applied first; `docker/npu_patch/megatron.patch` contains only the NPU-specific changes rebased onto that mainline patch:
+- Non-colocate weight transfer uses `hccl`; colocate uses `npu_ipc`.
+  Vime's NPU provider selects backend names and initialization types while
+  preserving the shared stateful weight-update sequence.
+- Serving recipes explicitly set
+  `--vllm-additional-config '{"weight_nz_mode":0}'`.
+  Do not rely on the legacy `VLLM_ASCEND_ENABLE_NZ` variable as a substitute.
+- Do not pass the removed `--megatron-to-hf-mode` or
+  `--vllm-weight-sync-mode` arguments. Qwen3-VL Megatron recipes must select
+  `--spec vime_plugins.models.qwen3_vl get_qwen3_vl_model_provider`.
+- Ray must advertise custom `NPU` resources, not CUDA `GPU` resources.
+  Ensure the requested actor/rollout layout fits the visible devices.
+- The Ascend `torch_memory_saver` build is specified in Dockerfile.npu.
+  Its Python wheel is built from
+  `sgl-kernel-npu/contrib/torch_memory_saver/python`; preserve that NPU build
+  rather than installing the CUDA implementation.
+- Run syntax/launch-contract checks before hardware tests. Cover non-colocate
+  HCCL, colocate IPC/MoE, native VL loading and torch_dist/reference loading
+  when changing shared NPU infrastructure. Draft-update changes also require
+  explicit MTP coverage.
+- Distinguish import checks, CPU contracts, operator tests and full E2E
+  validation. A successful patch application alone does not establish runtime
+  correctness or model support.
 
-pip install --no-deps --no-build-isolation -e ${WORKSPACE}/MegatronAdaptor
-pip install --no-deps --no-build-isolation -e ${WORKSPACE}/TransformerEngineNPU
-
-Do not install the CUDA TransformerEngine package in the same environment.
-
-#### 4. MindSpeed
-
-```bash
-export MINDSPEED_COMMIT=fc63de5c48426dd019c3b3f39e65f5bdf56e4086
-git clone https://gitcode.com/Ascend/MindSpeed.git "${WORKSPACE}/MindSpeed"
-git -C "${WORKSPACE}/MindSpeed" checkout "${MINDSPEED_COMMIT}"
-
-git -C "${WORKSPACE}/MindSpeed" apply --whitespace=nowarn "${PATCH_DIR}/mindspeed.patch"
-
-pip install --no-deps --no-build-isolation -e "${WORKSPACE}/MindSpeed"
-```
-
-#### 5. Vime
-
-```bash
-pip install -r "${WORKSPACE}/vime/requirements.txt"
-pip install "vllm-router>=0.1.14"
-pip install --no-deps --no-build-isolation -e "${WORKSPACE}/vime"
-```
-
-The NPU training region and optimizer state use Ascend `torch_memory_saver`.
-Retain the working build in an existing environment; the source build recipe is:
-
-```bash
-git clone --branch 2026.6.0 https://github.com/sgl-project/sgl-kernel-npu.git "${WORKSPACE}/sgl-kernel-npu"
-cd "${WORKSPACE}/sgl-kernel-npu"
-bash build.sh -a kernels
-bash build.sh -a memory-saver
-pip install --no-deps output/torch_memory_saver-0.0.8-cp312-cp312-linux_aarch64.whl
-```
-
-#### 5. Install vLLM and vLLM Ascend
-
-```bash
-export VLLM_COMMIT=e6bfe03ad73a3330cb427885aa90d97a12e1c704
-export VLLM_ASCEND_COMMIT=fd815467c221ee600137f6bdd53fe354d5e7c999
-
-git clone https://github.com/vllm-project/vllm.git "${WORKSPACE}/vllm"
-git -C "${WORKSPACE}/vllm" checkout "${VLLM_COMMIT}"
-VLLM_TARGET_DEVICE=empty pip install -v -e "${WORKSPACE}/vllm"
-
-git clone https://github.com/vllm-project/vllm-ascend.git "${WORKSPACE}/vllm-ascend"
-git -C "${WORKSPACE}/vllm-ascend" checkout "${VLLM_ASCEND_COMMIT}"
-git -C "${WORKSPACE}/vllm-ascend" submodule update --init --recursive
-pip install -v -e "${WORKSPACE}/vllm-ascend"
-```
-
-Apply `vllm.patch` and `vllm-ascend.patch` to those exact revisions before
-validation. Do not replace the existing source trees during conflict resolution.
-
-For image patch reconciliation, persist the common Megatron patch as
-`/opt/npu_patch/megatron-common.patch`. `series.conf` applies common → NPU and
-reverts in reverse order. This reconciles patch bytes, not repository versions;
-an old Megatron checkout cannot be upgraded by the patch reconciler alone.
-
-## Additional Dependencies
-
-The source PR specified the following versions. They are not an instruction to
-upgrade the existing S6 environment; in particular, validate the new NPU kernel
-requirements before changing torch-npu:
-
-```shell
-pip install torch-npu==2.10.0
-pip install torchvision==0.25.0
-pip install numpy==1.26.4
-```
+Qwen3.5 NPU requires a compatible training FLA and serving GDN/convolution
+operator stack and is not covered by these recipes. Keep model enablement and
+its dependency validation explicit rather than inferring support from a
+vendor patch or a model configuration alone.
