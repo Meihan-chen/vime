@@ -10,8 +10,6 @@ This guide provides instructions for installing Vime with NPU support, including
 | vLLM | `e6bfe03ad73a3330cb427885aa90d97a12e1c704` | [GitHub](https://github.com/vllm-project/vllm) |
 | vLLM-Ascend | `fd815467c221ee600137f6bdd53fe354d5e7c999` | [GitHub](https://github.com/vllm-project/vllm-ascend) |
 | Megatron-LM | `1dcf0dafa884ad52ffb243625717a3471643e087` | [GitHub](https://github.com/NVIDIA/Megatron-LM) |
-| Megatron-Bridge | `3fd3768045422d0aa5c97e90a4e6c659aea9acb9` | [GitHub](https://github.com/radixark/Megatron-Bridge) |
-| mbridge | `89eb10887887bc74853f89a4de258c0702932a1c` | [GitHub](https://github.com/ISEEKYAN/mbridge) |
 | MegatronAdaptor | `15582addff3f3d4680e350826fa70d012b475509` | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor) |
 | TransformerEngineNPU | `d743c83d060d5edc48867ecb9e93ec80d81860e4` | [GitCode](https://gitcode.com/Ascend/TransformerEngineNPU) |
 | MindSpeed | `fc63de5c48426dd019c3b3f39e65f5bdf56e4086` | [GitCode](https://gitcode.com/Ascend/MindSpeed) |
@@ -74,28 +72,13 @@ git -C "${VIME_INSTALL_ROOT}/Megatron-LM" apply "${PATCH_DIR}/megatron.patch"
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/Megatron-LM"
 ```
 
-### 3. Megatron-Bridge and mbridge
-
-Use the Megatron-Bridge source through `PYTHONPATH`, without installing its CUDA package dependencies.
-
-```bash
-git clone --branch bridge https://github.com/radixark/Megatron-Bridge.git "${VIME_INSTALL_ROOT}/Megatron-Bridge"
-git -C "${VIME_INSTALL_ROOT}/Megatron-Bridge" checkout 3fd3768045422d0aa5c97e90a4e6c659aea9acb9
-git -C "${VIME_INSTALL_ROOT}/Megatron-Bridge" apply --check "${PATCH_DIR}/megatron-bridge.patch"
-git -C "${VIME_INSTALL_ROOT}/Megatron-Bridge" apply "${PATCH_DIR}/megatron-bridge.patch"
-
-git clone https://github.com/ISEEKYAN/mbridge.git "${VIME_INSTALL_ROOT}/mbridge"
-git -C "${VIME_INSTALL_ROOT}/mbridge" checkout 89eb10887887bc74853f89a4de258c0702932a1c
-pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/mbridge"
-
-pip install --no-build-isolation "nvidia-modelopt==0.46.0" "nvdlfw-inspect==0.2.2"
-```
-
-### 4. TransformerEngineNPU and MegatronAdaptor
+### 3. TransformerEngineNPU and MegatronAdaptor
 
 Use TransformerEngineNPU, not the CUDA TransformerEngine package.
 
 ```bash
+pip install --no-build-isolation "nvidia-modelopt==0.46.0" "nvdlfw-inspect==0.2.2"
+
 git clone https://gitcode.com/Ascend/TransformerEngineNPU.git "${VIME_INSTALL_ROOT}/TransformerEngineNPU"
 git -C "${VIME_INSTALL_ROOT}/TransformerEngineNPU" checkout d743c83d060d5edc48867ecb9e93ec80d81860e4
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/TransformerEngineNPU"
@@ -105,7 +88,7 @@ git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" checkout 15582addff3f3d4680e350826
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MegatronAdaptor"
 ```
 
-### 5. MindSpeed
+### 4. MindSpeed
 
 ```bash
 git clone https://gitcode.com/Ascend/MindSpeed.git "${VIME_INSTALL_ROOT}/MindSpeed"
@@ -115,14 +98,14 @@ git -C "${VIME_INSTALL_ROOT}/MindSpeed" apply "${PATCH_DIR}/mindspeed.patch"
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MindSpeed"
 ```
 
-### 6. Vime
+### 5. Vime
 
 ```bash
 pip install -r "${VIME_INSTALL_ROOT}/vime/requirements.txt"
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/vime"
 ```
 
-### 7. torch_memory_saver
+### 6. torch_memory_saver
 
 Build the NPU wheel from `sgl-kernel-npu`:
 
@@ -139,7 +122,7 @@ cd "${VIME_INSTALL_ROOT}/vime"
 Set the source paths before running Vime:
 
 ```bash
-export PYTHONPATH="${VIME_INSTALL_ROOT}/Megatron-Bridge/src:${VIME_INSTALL_ROOT}/Megatron-LM:${VIME_INSTALL_ROOT}/MegatronAdaptor:${VIME_INSTALL_ROOT}/TransformerEngineNPU:${VIME_INSTALL_ROOT}/vime${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${VIME_INSTALL_ROOT}/Megatron-LM:${VIME_INSTALL_ROOT}/MegatronAdaptor:${VIME_INSTALL_ROOT}/TransformerEngineNPU:${VIME_INSTALL_ROOT}/vime${PYTHONPATH:+:${PYTHONPATH}}"
 
 python3 -c 'import megatron, mindspeed, megatron_adaptor, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend'
 ```

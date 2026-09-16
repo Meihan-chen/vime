@@ -24,7 +24,6 @@ def test_vime_platform_override_selects_cuda(monkeypatch):
     assert platform.name == "cuda"
     assert platform.ray.resource_name == "GPU"
     assert platform.ray.visible_devices_env == "CUDA_VISIBLE_DEVICES"
-    assert platform.checkpoint.default_megatron_to_hf_mode == "raw"
 
 
 def test_vime_platform_override_selects_npu_without_vendor_import(monkeypatch):
@@ -36,7 +35,6 @@ def test_vime_platform_override_selects_npu_without_vendor_import(monkeypatch):
     after = {name for name in ("torch_npu", "vllm_ascend", "mindspeed") if name in sys.modules}
     assert platform.name == "npu"
     assert platform.ray.resource_name == "NPU"
-    assert platform.checkpoint.default_megatron_to_hf_mode == "bridge"
     assert before == after
 
 

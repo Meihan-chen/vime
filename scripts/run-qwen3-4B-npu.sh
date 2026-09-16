@@ -24,7 +24,7 @@ export HYDRA_FULL_ERROR=1
 export DISABLE_L2_CACHE=1
 export VLLM_ASCEND_ENABLE_NZ=0
 export VLLM_USE_AOT_COMPILE=0
-export PYTHONPATH="/root/Megatron-Bridge/src:/root/Megatron-LM/:${PYTHONPATH:-}"
+export PYTHONPATH="/root/Megatron-LM/:${PYTHONPATH:-}"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 

@@ -121,8 +121,6 @@ class TrainingBootstrap:
 
 @dataclass(frozen=True)
 class CheckpointCapabilities:
-    default_megatron_to_hf_mode: str = "raw"
-
     def patch_default_planner(self, default_planner: Any) -> None:
         return None
 

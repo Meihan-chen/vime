@@ -288,5 +288,5 @@ def create_npu_platform() -> Platform:
         weight_transfer=NpuWeightTransferPlatformOps(),
         vllm=NpuVLLMLaunchPlatformOps(),
         megatron=NpuTrainingBootstrap(),
-        checkpoint=NpuCheckpointCapabilities(default_megatron_to_hf_mode="bridge"),
+        checkpoint=NpuCheckpointCapabilities(),
     )

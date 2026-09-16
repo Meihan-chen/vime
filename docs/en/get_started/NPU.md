@@ -12,7 +12,7 @@ backend together with the **vLLM Ascend** rollout backend, synchronizing actor
 weights to vLLM through the native HCCL weight-sync path.
 
 The current NPU support targets Ascend **Atlas A2 / A3** (aarch64) hosts with the
-Ascend driver and **CANN 9.0.0** (Toolkit, Kernels, and NNAL/ATB) installed.
+Ascend driver and **CANN 9.1.0** (Toolkit, Kernels, and NNAL/ATB) installed.
 Only `python==3.12` is supported.
 
 ## Docker
@@ -117,7 +117,7 @@ We show the training script below:
 
 ```bash
 export SLIME_SCRIPT_TRAIN_BACKEND=megatron
-export PYTHONPATH="/root/Megatron-Bridge/src:/root/Megatron-LM/:$PYTHONPATH"
+export PYTHONPATH="/root/Megatron-LM/:/root/MegatronAdaptor:/root/TransformerEngineNPU:$PYTHONPATH"
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1

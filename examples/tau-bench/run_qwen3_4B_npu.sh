@@ -32,7 +32,7 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/../../scripts/models/qwen3-4B-Instruct-2507.sh"
 
-export PYTHONPATH="${SCRIPT_DIR}:/root/Megatron-Bridge/src:/root/Megatron-LM:${PYTHONPATH:-}"
+export PYTHONPATH="${SCRIPT_DIR}:/root/Megatron-LM:${PYTHONPATH:-}"
 
 DATA_ROOT="${DATA_ROOT:-/root}"
 TAU_BENCH_ROOT="${TAU_BENCH_ROOT:-/root/tau-bench}"
