@@ -99,6 +99,6 @@ optional hooks, loaded by import path — no vendor-specific code lives in vime 
 - `--custom-update-weight-post-write-path` (vime, trainer side): called after a version's files are
   written, before the engines are told to read it (e.g. upload pending writes to the backing object store).
   Signature: `hook(args, version_dir, rollout_engines)`.
-- `--custom-update-weight-pre-read-path` (vime, engine side): called on each host
+- `--vllm-custom-pull-weights-pre-read-hook` (vllm server arg, engine side): called on each host
   inside the engine before `/pull_weights` reads the delta directory (e.g. refresh the mount's view).
   Signature: `hook(delta_dir, target_version)`.

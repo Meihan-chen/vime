@@ -26,8 +26,8 @@ Speculators supports EAGLE-3, DFlash, and MTP-style drafts, ships pre-trained
 checkpoints on Hugging Face (see the `RedHatAI/*-speculator.*` collection), and
 saves drafts in a format that `vllm serve <speculator_model>` can deploy directly.
 
-For the full list of `SpeculativeConfig` fields (including `disable_by_batch_size`,
-`acceptance_method`, draft TP, etc.), see vLLM's speculative-decoding
+For the full list of `SpeculativeConfig` fields (including `num_speculative_tokens`
+and `draft_tensor_parallel_size`), see vLLM's speculative-decoding
 [documentation](https://docs.vllm.ai/en/latest/features/speculative_decoding/).
 
 ## Online SFT for the Draft Model

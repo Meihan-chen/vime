@@ -449,6 +449,21 @@ def _vllm_sampling_body(sp: dict) -> dict:
     }
     if "temperature" in sp:
         body["temperature"] = sp["temperature"]
+    if sp.get("min_new_tokens") is not None:
+        body["min_tokens"] = sp["min_new_tokens"]
+    if sp.get("repetition_penalty") is not None:
+        body["repetition_penalty"] = sp["repetition_penalty"]
+    for key in (
+        "seed",
+        "min_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "ignore_eos",
+        "logit_bias",
+        "spaces_between_special_tokens",
+    ):
+        if sp.get(key) is not None:
+            body[key] = sp[key]
     if "top_p" in sp:
         body["top_p"] = sp["top_p"]
     tk = sp.get("top_k")
@@ -456,6 +471,8 @@ def _vllm_sampling_body(sp: dict) -> dict:
         body["top_k"] = tk
     if sp.get("stop"):
         body["stop"] = sp["stop"]
+        if sp.get("no_stop_trim") is not None:
+            body["include_stop_str_in_output"] = sp["no_stop_trim"]
     if sp.get("stop_token_ids"):
         body["stop_token_ids"] = sp["stop_token_ids"]
     if sp.get("skip_special_tokens") is not None:
@@ -522,7 +539,6 @@ async def call_vllm_generate(
     # see vime ``vllm_rollout.py`` headers handling.
     headers = {"x-session-id": session_id} if session_id and session_id != "default" else None
     timeout = aiohttp.ClientTimeout(total=None, sock_read=900)
-    task = asyncio.current_task()
     try:
         async with aiohttp.ClientSession(timeout=timeout) as sess, sess.post(
             f"{vllm_url}/inference/v1/generate",
@@ -545,12 +561,9 @@ async def call_vllm_generate(
         fr = choice.get("finish_reason")
         finish = fr if isinstance(fr, str) and fr else "stop"
     except (asyncio.CancelledError, aiohttp.ClientError, asyncio.TimeoutError) as e:
-        # vLLM ``/inference/v1/generate`` has no per-request HTTP abort endpoint.
-        # Cancelling the in-flight task tears down the aiohttp request, which drops
-        # the streaming connection so vLLM stops generating.
+        # vLLM has no per-request abort endpoint. Closing this router request also
+        # closes its selected worker request, so vLLM cancels the engine request.
         logger.debug("[%s] sid=%s turn aborted: %s", adapter.log_prefix, session_id, type(e).__name__)
-        if task is not None:
-            task.cancel()
         raise
 
     return TurnRecord(

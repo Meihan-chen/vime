@@ -34,6 +34,8 @@ The vLLM community horizontally supports many LLM post-training frameworks, incl
   - [Quick Start](#quick-start)
     - [Agentic RL examples](#agentic-rl-examples)
   - [Arguments Walkthrough](#arguments-walkthrough)
+  - [Engine Deployment](#engine-deployment)
+  - [Correctness, Stability, and CI](#correctness-stability-and-ci)
   - [Code Reading Path](#code-reading-path)
   - [Developer Guide](#developer-guide)
   - [slime doc](#slime-doc)
@@ -80,6 +82,29 @@ Arguments in Vime are divided into three categories:
 `--rollout-num-gpus-per-engine` sets the tensor parallel size of each vLLM engine. The default rollout entry is `vime.rollout.vllm_rollout.generate_rollout`.
 
 For complete usage instructions, please refer to the [Usage Documentation](docs/en/get_started/usage.md).
+
+## Engine Deployment
+
+Vime keeps the Megatron and vLLM control surfaces close to the upstream engines while adding the RL dataflow around them. Beyond the argument pass-through described above, see:
+
+- [vLLM Config](docs/en/advanced/vllm-config.md) for optional YAML topology configuration, heterogeneous server groups, multi-model serving, and per-group overrides;
+- [PD Disaggregation](docs/en/advanced/pd-disaggregation.md) for multi-turn and agentic workloads with different prefill/decode resource needs;
+- router policies such as session affinity for multi-turn agents (see [vLLM Config](docs/en/advanced/vllm-config.md));
+- [Delta Weight Sync](docs/en/advanced/delta-weight-sync.md) for disk-based updates of disaggregated rollout engines;
+- [External Rollout Engines](docs/en/advanced/external-rollout-engines.md) for serving managed outside the training job. Serving can use an independent environment; disk transport avoids an NCCL group between training and serving. Different GPU models or vendors still require compatible model formats, precision, and vLLM hardware support.
+
+## Correctness, Stability, and CI
+
+RL bugs can be silent. Vime keeps the dataflow explicit and supports separate rollout-only and train-only debugging paths. CPU unit tests, customization-hook contract tests, and GPU end-to-end suites protect different parts of this workflow. Buildkite runs always-on CPU checks; GPU suites require the manual gate, so a green CPU build is not GPU validation.
+
+Useful engineering docs:
+
+- [CI](docs/en/developer_guide/ci.md)
+- [Debugging](docs/en/developer_guide/debug.md)
+- [Reproducibility](docs/en/advanced/reproducibility.md)
+- [Fault Tolerance](docs/en/advanced/fault-tolerance.md)
+- [Trace Viewer](docs/en/developer_guide/trace.md)
+- [Profiling](docs/en/developer_guide/profiling.md)
 
 ## Code Reading Path
 

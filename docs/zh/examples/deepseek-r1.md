@@ -168,7 +168,7 @@ OPTIMIZER_ARGS=(
 
 #### VLLM_ARGS
 
-这些是 vLLM 所需的参数。`--rollout-num-gpus-per-engine` 表示单个 engine 的 worker GPU 总数；这里它等于 `tensor_parallel_size * data_parallel_size`，而不只是 tensor-parallel size。其他 vLLM 参数通过添加 `--vllm-` 前缀传给 vime。为了充分利用 vLLM 的大 EP 推理能力，我们通过 `--vllm-enable-expert-parallel` 开启专家并行，通过 `--vllm-data-parallel-size 8` 开启 DP attention。DeepEP 默认关闭，可通过脚本中注释掉的 flag 开启。
+这些是 vLLM 所需的参数。`--rollout-num-gpus-per-engine` 表示单个 engine 的 worker GPU 总数；这里它等于 `tensor_parallel_size * data_parallel_size`，而不只是 tensor-parallel size。其他 vLLM 参数通过添加 `--vllm-` 前缀传给 vime。为了充分利用 vLLM 的大 EP 推理能力，我们通过 `--vllm-enable-expert-parallel` 开启专家并行，通过 `--vllm-data-parallel-size 8` 开启 DP attention。该 recipe 没有选择 DeepEP backend，不能复现上游 recipe 的自动 DeepEP 模式。
 
 最后的 `--vllm-server-concurrency` 是 vime 的特有参数，是为了防止同时发给 vllm server 的并发太大打爆 http server，默认为 512。但是我们现在是 8 机一个 server，为了保证每个 dp rank 能有 128 的并发，我们调整为 1024。
 

@@ -116,6 +116,8 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> list[S
 
 If one full trajectory has a single total reward but is split into `K` training segments, a common pattern is to distribute that reward across the segments, for example by assigning `reward / K` to each segment, so the same rollout reward is not amplified.
 
+**Example**: See [examples/multi_agent/rollout_with_multi_agents.py](../../../examples/multi_agent/rollout_with_multi_agents.py)
+
 ---
 
 ### `--custom-rm-path`

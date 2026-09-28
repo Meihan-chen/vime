@@ -140,7 +140,7 @@ steps:
         -e GIT_CONFIG_PARAMETERS="'safe.directory=/workspace'" \
         -e GLOO_SOCKET_IFNAME=lo -e TP_SOCKET_IFNAME=lo \
         -v "$$PWD:/workspace" -w /workspace \
-        "$${VIME_CI_IMAGE:-vllm/vime:latest}" bash -lc '
+        vllm/vime:latest bash -lc '
           set -euo pipefail
           pip install -q -e . --no-deps --break-system-packages
           for test_file in \
@@ -224,7 +224,7 @@ steps:
             value: vllm-config
           - label: "run-ci-megatron — up to 8 GPU, 21 runs"
             value: megatron
-          - label: "run-ci-vime-customized — 1–8 GPU, 6 tests"
+          - label: "run-ci-vime-customized — 1–8 GPU, 5 tests"
             value: vime-customized
           - label: "run-ci-precision — 8 GPU, 1 test"
             value: precision

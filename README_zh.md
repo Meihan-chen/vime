@@ -34,6 +34,8 @@ vLLM 社区横向支持许多 LLM post-training 框架，包括（按字母顺�
   - [快速开始](#快速开始)
     - [Agentic RL 示例](#agentic-rl-示例)
   - [参数说明](#参数说明)
+  - [Engine 部署](#engine-部署)
+  - [正确性、稳定性与 CI](#正确性稳定性与-ci)
   - [代码阅读路径](#代码阅读路径)
   - [开发指南](#开发指南)
   - [slime doc](#slime-doc)
@@ -80,6 +82,29 @@ Vime 的参数分为三类：
 `--rollout-num-gpus-per-engine` 对应每个 vLLM engine 的 tensor parallel size。默认 rollout 入口为 `vime.rollout.vllm_rollout.generate_rollout`。
 
 完整使用说明请查阅 [使用文档](docs/zh/get_started/usage.md)。
+
+## Engine 部署
+
+Vime 在 Megatron 与 vLLM 原生控制接口外组织 RL 数据流。除上述参数透传外，请参阅：
+
+- [vLLM Config](docs/zh/advanced/vllm-config.md)：可选的 YAML 拓扑配置、异构 server group、多模型 serving 和 per-group override；
+- [PD Disaggregation](docs/zh/advanced/pd-disaggregation.md)：面向 prefill/decode 资源需求不同的多轮和 agentic 工作负载；
+- 面向多轮 agent 的 session affinity 等 router policy，见 [vLLM Config](docs/zh/advanced/vllm-config.md)；
+- [Delta Weight Sync](docs/zh/advanced/delta-weight-sync.md)：分离部署 rollout engine 的磁盘增量更新；
+- [External Rollout Engines](docs/zh/advanced/external-rollout-engines.md)：由训练任务外部管理 serving。Serving 可以使用独立环境；disk transport 无需训练端和 serving 端组成 NCCL group。不同 GPU 型号或厂商仍需满足模型格式、精度和 vLLM 硬件支持的兼容要求。
+
+## 正确性、稳定性与 CI
+
+RL bug 可能不会立即报错。Vime 保持显式数据流，支持 rollout-only 和 train-only 分离调试。CPU 单测、customization hook contract test 和 GPU 端到端测试分别保护这条链路的不同部分。Buildkite 自动运行 CPU 检查；GPU suite 需要手动开启 gate，因此 CPU 构建通过不代表 GPU 验证通过。
+
+相关工程文档：
+
+- [CI](docs/zh/developer_guide/ci.md)
+- [Debugging](docs/zh/developer_guide/debug.md)
+- [Reproducibility](docs/zh/advanced/reproducibility.md)
+- [Fault Tolerance](docs/zh/advanced/fault-tolerance.md)
+- [Trace Viewer](docs/zh/developer_guide/trace.md)
+- [Profiling](docs/zh/developer_guide/profiling.md)
 
 ## 代码阅读路径
 

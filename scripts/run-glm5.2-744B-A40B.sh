@@ -134,7 +134,6 @@ vllm:
         num_gpus: 64
         num_gpus_per_engine: 64
         overrides:
-          # Prefill uses data/expert parallelism with the high-throughput DeepEP backend.
           data_parallel_size: 64
           enable_expert_parallel: true
           max_num_batched_tokens: 131072
@@ -149,7 +148,6 @@ vllm:
         num_gpus: 192
         num_gpus_per_engine: 64
         overrides:
-          # Decode uses the low-latency DeepEP backend.
           data_parallel_size: 64
           enable_expert_parallel: true
           max_num_seqs: 768

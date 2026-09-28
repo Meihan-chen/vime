@@ -6,7 +6,7 @@ on the updatable (actor) server, testing:
   - Health monitor detects crash and marks engine as None
   - RolloutServer.recover() restarts the dead engine
   - Updatable engines: offload → resume_memory_occupation → update_weights
-  - Non-updatable engines: offload → update_weights_from_disk
+  - Non-updatable engines: level-1 offload → resume_memory_occupation
   - Training continues after recovery
 """
 

@@ -294,6 +294,29 @@ def test_native_dspark_update_uses_draft_source_and_lifecycle(update_module, mon
 
 
 @pytest.mark.unit
+def test_rank_local_experts_keep_dspark_draft_update(update_module, monkeypatch):
+    updater = _updater(update_module, dspark_enabled=True)
+    engine = RecordingEngine()
+    created = []
+    _install_ipc_trainer_stubs(monkeypatch, created)
+    monkeypatch.setattr(update_module, "configure_expert_routing", lambda **kwargs: ([], [object()]))
+    updater.connect_rollout_engines([engine], object(), engine_gpu_counts=[2], engine_gpu_offsets=[0])
+
+    assert len(updater._native_trainers) == 1
+    trainer = updater._native_trainers[0]
+    trainer.source = updater._source
+    updater._update_rollout_weights = MagicMock()
+    updater.update_weights()
+
+    updater._update_rollout_weights.assert_called_once_with({}, draft=False)
+    assert trainer.draft_states == [True]
+    assert trainer.source_draft_states == [True]
+    assert updater._source.draft is False
+    assert len(engine.start_draft_weight_update.calls) == 1
+    assert len(engine.continue_generation.calls) == 1
+
+
+@pytest.mark.unit
 def test_failed_native_update_does_not_resume_generation(update_module, monkeypatch):
     updater = _updater(update_module)
     engine = RecordingEngine()

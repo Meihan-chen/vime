@@ -36,7 +36,6 @@ def execute():
         "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 1024 "
         "--rollout-temperature 0.8 "
-        "--rollout-top-k 20 "
         "--rollout-top-p 0.95 "
         "--over-sampling-batch-size 8 "
         "--dynamic-sampling-filter-path vime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
