@@ -142,7 +142,7 @@ This example already targets multi-node training. Before launching:
 - Provide a `HOSTFILE` listing worker IPs (one per line) and export `HOSTFILE=/path/to/hostfile` before launching.
 - Adjust parallelism coherently. The default example uses TP=8, PP=4, EP=16, CP=2, while rollout uses 32 GPUs per engine with vLLM DP attention.
 
-If your rollout GPU count does not divide the expert count cleanly, you can use `--vllm-eplb-config` to enable EPLB and configure redundant experts.
+If your rollout GPU count does not divide the expert count cleanly, enable EPLB with `--vllm-enable-eplb` and configure redundant experts with `--vllm-eplb-config`.
 
 ## FP8 Rollout
 

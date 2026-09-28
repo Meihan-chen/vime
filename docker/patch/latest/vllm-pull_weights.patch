@@ -477,7 +477,7 @@ diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
 index a3b00aaad2..2b05c5e2f5 100644
 --- a/vllm/v1/worker/gpu_worker.py
 +++ b/vllm/v1/worker/gpu_worker.py
-@@ -471,6 +471,25 @@ class Worker(WorkerBase):
+@@ -471,6 +471,24 @@ class Worker(WorkerBase):
          with set_current_vllm_config(self.vllm_config):
              self.model_runner.reload_weights(*args, **kwargs)
  
@@ -486,7 +486,6 @@ index a3b00aaad2..2b05c5e2f5 100644
 +        local_checkpoint_dir: str,
 +        source_dir: str,
 +        target_version: int,
-+        pre_read_hook: str | None = None,
 +    ) -> dict[str, Any]:
 +        from vllm.utils.local_checkpoint import pull_checkpoint
 +
@@ -495,7 +494,7 @@ index a3b00aaad2..2b05c5e2f5 100644
 +            base_dir=self.model_config.model,
 +            source_dir=source_dir,
 +            target_version=target_version,
-+            pre_read_hook=pre_read_hook,
++            pre_read_hook=self.model_config.custom_pull_weights_pre_read_hook,
 +        )
 +
 +        return {"success": True, "weight_version": str(target_version)}
@@ -503,3 +502,46 @@ index a3b00aaad2..2b05c5e2f5 100644
      @torch.inference_mode()
      def determine_available_memory(self) -> int:
          """Profiles the peak memory usage of the model to determine how much
+diff --git a/vllm/config/model.py b/vllm/config/model.py
+--- a/vllm/config/model.py
++++ b/vllm/config/model.py
+@@ -335,6 +335,9 @@
+     used with `--generation-config auto`, the override parameters will be
+     merged with the default config from the model. If used with
+     `--generation-config vllm`, only the override parameters are used."""
++    custom_pull_weights_pre_read_hook: str | None = None
++    """Import path of a hook(source_dir, target_version) called before reading published weights."""
++
+     enable_sleep_mode: bool = False
+     """Enable sleep mode for the engine (only cuda and
+     hip platforms are supported)."""
+diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
+--- a/vllm/engine/arg_utils.py
++++ b/vllm/engine/arg_utils.py
+@@ -705,6 +705,7 @@
+     reasoning_config: ReasoningConfig = get_field(VllmConfig, "reasoning_config")
+
+     generation_config: str = ModelConfig.generation_config
++    custom_pull_weights_pre_read_hook: str | None = ModelConfig.custom_pull_weights_pre_read_hook
+     enable_sleep_mode: bool = ModelConfig.enable_sleep_mode
+     enable_cumem_allocator: bool = ModelConfig.enable_cumem_allocator
+     override_generation_config: dict[str, Any] = get_field(
+@@ -922,6 +923,10 @@
+         )
+         model_group.add_argument(
+             "--override-generation-config", **model_kwargs["override_generation_config"]
++        )
++        model_group.add_argument(
++            "--custom-pull-weights-pre-read-hook",
++            **model_kwargs["custom_pull_weights_pre_read_hook"],
+         )
+         model_group.add_argument(
+             "--enable-sleep-mode", **model_kwargs["enable_sleep_mode"]
+@@ -1811,6 +1816,7 @@
+             pooler_config=self.pooler_config,
+             generation_config=self.generation_config,
+             override_generation_config=self.override_generation_config,
++            custom_pull_weights_pre_read_hook=self.custom_pull_weights_pre_read_hook,
+             enable_sleep_mode=self.enable_sleep_mode,
+             enable_cumem_allocator=self.enable_cumem_allocator,
+             model_impl=self.model_impl,

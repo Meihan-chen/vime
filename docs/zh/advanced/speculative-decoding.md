@@ -24,7 +24,7 @@ TorchSpec 提供 torch-native 的 disaggregated draft training。
 Speculators 支持 EAGLE-3、DFlash 以及 MTP 风格的 draft，HuggingFace 上已有预训练 ckpt
 （参见 `RedHatAI/*-speculator.*` 集合），产物可被 `vllm serve <speculator_model>` 直接部署。
 
-`SpeculativeConfig` 的完整字段（`disable_by_batch_size`、`acceptance_method`、
+`SpeculativeConfig` 的完整字段（`num_speculative_tokens`、`draft_tensor_parallel_size`、
 draft TP 等）请参考 vLLM 的 speculative decoding [文档](https://docs.vllm.ai/en/latest/features/speculative_decoding/)。
 
 ## 在线 SFT draft model

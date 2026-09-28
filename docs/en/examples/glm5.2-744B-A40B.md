@@ -161,7 +161,7 @@ MTP / EAGLE speculative decoding is enabled using the model's own next-token-pre
 
 vLLM measures CUDA-graph capture size in flattened query tokens. With five speculative tokens, each decode request contributes `1 + 5 = 6` query tokens. The shared limit `48` therefore covers 8 requests, while the decode-group override `72` covers 12 requests. vLLM derives the DeepEP dispatch-buffer size from its scheduler token capacity.
 
-`VLLM_ENGINE_ITERATION_TIMEOUT_S=3600` raises vLLM's engine watchdog for this long-running multi-node workload.
+The pinned vLLM runtime does not consume `VLLM_ENGINE_ITERATION_TIMEOUT_S` in its engine loop. Setting it does not provide the source recipe's scheduler watchdog.
 
 #### Networking
 

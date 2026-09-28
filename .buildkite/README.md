@@ -17,9 +17,9 @@ The four test steps depend on the pre-commit gate. Each suite runs its files
 sequentially inside one step because these queues boot a fresh EC2 instance
 per job — a per-file matrix would be mostly boot + pip-install time.
 Most always-on CPU steps use the standard `python:3.11` image and install their
-lightweight dependencies at runtime. `upstream-sync-cpu` uses `VIME_CI_IMAGE`
-(defaulting to `vllm/vime:latest`) because the synchronized GLM and checkpoint
-tests import the image-pinned Megatron stack even though they do not allocate a GPU.
+lightweight dependencies at runtime. `upstream-sync-cpu` uses
+`vllm/vime:latest` because the synchronized GLM and checkpoint tests import the
+image-pinned Megatron stack even though they do not allocate a GPU.
 
 ## Creating the pipeline (one-time, Buildkite UI)
 
@@ -70,8 +70,8 @@ startup, so a warm HF cache is all they need. `WANDB_API_KEY` is not wired up
 yet; runs report without wandb until it's added (e.g. as a k8s secret in the
 pod spec).
 
-Set `VIME_CI_IMAGE` to an immutable candidate digest for image-backed jobs;
-otherwise they use `vllm/vime:latest`. Do not update `latest` before merge.
+GPU jobs use `vllm/vime:latest`. Rebuild and publish that image before validating
+Dockerfile or vLLM patch changes.
 
 ## Keeping it in sync
 

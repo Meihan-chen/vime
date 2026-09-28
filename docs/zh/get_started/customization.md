@@ -116,6 +116,8 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> list[S
 
 如果一个完整 trajectory 只有一个总奖励、但被拆成了 `K` 个训练片段，常见做法是在这些片段之间分配这个奖励（例如每个片段写入 `reward / K`），避免把同一次 rollout 的奖励重复放大。
 
+**示例**: 参见 [examples/multi_agent/rollout_with_multi_agents.py](../../../examples/multi_agent/rollout_with_multi_agents.py)
+
 ---
 
 ### `--custom-rm-path`

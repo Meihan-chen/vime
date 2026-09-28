@@ -153,6 +153,7 @@ ray job submit --address="http://127.0.0.1:8265" \
         "MASTER_ADDR": "${MASTER_ADDR}",
         "PYTHONPATH": "/root/Megatron-LM/",
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        "NVSHMEM_DISABLE_NCCL": "1"
      }
    }' \
    -- python3 train.py \

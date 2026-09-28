@@ -115,7 +115,6 @@ VLLM_ARGS=(
    # mtp
 
    # dsa
-   --vllm-attention-backend nsa
    --vllm-max-cudagraph-capture-size 40
 
    --vllm-max-num-seqs 512

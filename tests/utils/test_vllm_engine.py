@@ -92,6 +92,45 @@ class _MockResponse:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "first_response, expected_log",
+    [
+        (_MockResponse(json_data={"success": False}, text='{"success": false}'), "HTTP 200"),
+        (_MockResponse(status_code=503, text="busy"), "HTTP 503 'busy'"),
+    ],
+)
+def test_flush_cache_retries(vllm_engine, monkeypatch, caplog, first_response, expected_log):
+    responses = iter([first_response, _MockResponse(json_data={"success": True})])
+    calls = []
+    sleeps = []
+
+    def fake_post(url, *, params):
+        calls.append((url, params))
+        return next(responses)
+
+    monkeypatch.setattr(mod.requests, "post", fake_post)
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    with caplog.at_level("INFO", logger=mod.__name__):
+        vllm_engine.flush_cache()
+
+    assert calls == [("http://127.0.0.1:8765/reset_prefix_cache", {"reset_running_requests": True})] * 2
+    assert sleeps == [1]
+    assert expected_log in caplog.text
+
+
+@pytest.mark.unit
+def test_flush_cache_times_out_after_unsuccessful_resets(vllm_engine, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(mod.requests, "post", lambda *args, **kwargs: _MockResponse(json_data={"success": False}))
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+
+    with pytest.raises(TimeoutError, match="Timeout while flushing cache"):
+        vllm_engine.flush_cache()
+
+    assert sleeps == [1] * 60
+
+
+@pytest.mark.unit
 def test_normalize_vllm_wake_tags_drops_unsupported():
     assert mod._normalize_vllm_wake_tags(["weights", "cuda_graph", "kv_cache"]) == ["weights", "kv_cache"]
 
@@ -113,6 +152,7 @@ def test_launch_config_single_node(vllm_args):
     assert sa["_pp_size"] == 1
     assert sa["_pcp_size"] == 1
     assert sa["_dp_size"] == 1
+    assert sa["enable_per_request_metrics"] is True
 
 
 @pytest.mark.unit
@@ -816,7 +856,7 @@ def test_update_weights_from_disk_posts_collective_rpc(vllm_engine, monkeypatch)
 def test_pull_weights_posts_collective_rpc(vllm_engine, monkeypatch):
     vllm_engine.args.update_weight_local_checkpoint_dir = "/local/checkpoint"
     vllm_engine.args.update_weight_disk_dir = "/shared/checkpoints"
-    vllm_engine.args.custom_update_weight_pre_read_path = "hooks.refresh"
+    vllm_engine._weight_version = "old"
     seen = []
 
     def fake_post(url, *, json=None):
@@ -835,23 +875,18 @@ def test_pull_weights_posts_collective_rpc(vllm_engine, monkeypatch):
                     "local_checkpoint_dir": "/local/checkpoint",
                     "source_dir": "/shared/checkpoints",
                     "target_version": 8,
-                    "pre_read_hook": "hooks.refresh",
                 },
             },
         ),
-        (
-            "http://127.0.0.1:8765/update_weight_version",
-            {"new_version": "8"},
-        ),
     ]
-    assert vllm_engine._weight_version == "8"
+    assert vllm_engine._weight_version == "old"
 
 
 @pytest.mark.unit
-def test_pull_weights_does_not_advance_version_when_pull_fails(vllm_engine, monkeypatch):
+@pytest.mark.parametrize("operation", ["pull", "reload"])
+def test_disk_update_does_not_advance_version_on_failure(vllm_engine, monkeypatch, operation):
     vllm_engine.args.update_weight_local_checkpoint_dir = "/local/checkpoint"
     vllm_engine.args.update_weight_disk_dir = "/shared/checkpoints"
-    vllm_engine.args.custom_update_weight_pre_read_path = None
     vllm_engine._weight_version = "old"
 
     def fake_post(url, *, json=None):
@@ -861,7 +896,10 @@ def test_pull_weights_does_not_advance_version_when_pull_fails(vllm_engine, monk
     monkeypatch.setattr(mod.requests, "post", fake_post)
 
     with pytest.raises(requests.exceptions.HTTPError):
-        vllm_engine.pull_weights(8)
+        if operation == "pull":
+            vllm_engine.pull_weights(8)
+        else:
+            vllm_engine.update_weights_from_disk("/local/checkpoint", weight_version="8")
     assert vllm_engine._weight_version == "old"
 
 

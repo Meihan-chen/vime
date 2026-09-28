@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import cloudpickle
 import requests
+from urllib3.exceptions import NewConnectionError
 from vllm.utils.system_utils import kill_process_tree
 
 from vime.backends.vllm_utils.external import get_server_info
@@ -291,10 +292,24 @@ class VLLMEngine(RayActor):
     def flush_cache(self):
         if self.node_rank != 0:
             return
-        params = {"reset_running_requests": False}
-        requests.post(
-            f"http://{self.server_host}:{self.server_port}/reset_prefix_cache", params=params
-        ).raise_for_status()
+        params = {"reset_running_requests": True}
+        for _ in range(60):
+            try:
+                response = requests.post(
+                    f"http://{self.server_host}:{self.server_port}/reset_prefix_cache", params=params
+                )
+                if response.status_code == 200 and response.json()["success"]:
+                    break
+                logger.info(f"Error flushing cache: HTTP {response.status_code} {response.text!r}")
+                time.sleep(1)
+            except NewConnectionError as e:
+                raise e
+            except Exception as e:
+                logger.info(f"Error flushing cache: {e}")
+                time.sleep(1)
+                continue
+        else:
+            raise TimeoutError("Timeout while flushing cache.")
 
     def get_url(self):
         if self.node_rank != 0:
@@ -391,14 +406,11 @@ class VLLMEngine(RayActor):
                     "local_checkpoint_dir": self.args.update_weight_local_checkpoint_dir,
                     "source_dir": self.args.update_weight_disk_dir,
                     "target_version": target_version,
-                    "pre_read_hook": self.args.custom_update_weight_pre_read_path,
                 },
             },
         )
         response.raise_for_status()
-        result = response.json()
-        self.set_weight_version(str(target_version))
-        return result
+        return response.json()
 
     def update_weights_from_disk(
         self,
@@ -638,6 +650,7 @@ def _compute_server_args(
         "tensor_parallel_size": tp,
         "logprobs_mode": "processed_logprobs",
         "enable_prompt_tokens_details": True,
+        "enable_per_request_metrics": True,
         "enable_server_load_tracking": True,
     }
 
@@ -773,5 +786,6 @@ _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
     "tensor_parallel_size",
     "logprobs_mode",
     "enable_prompt_tokens_details",
+    "enable_per_request_metrics",
     "enable_server_load_tracking",
 ]

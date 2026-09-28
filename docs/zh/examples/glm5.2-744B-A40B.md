@@ -159,7 +159,7 @@ MTP / EAGLE speculative decoding 直接使用模型自带的 next-token-predicti
 
 vLLM 的 CUDA graph capture size 按展开后的 query token 数计算。启用 5 个 speculative token 后，每个 decode 请求对应 `1 + 5 = 6` 个 query token，因此共享上限 `48` 可覆盖 8 个请求，decode group 的覆盖值 `72` 可覆盖 12 个请求。vLLM 会根据 scheduler token capacity 自动推导 DeepEP dispatch buffer 大小。
 
-`VLLM_ENGINE_ITERATION_TIMEOUT_S=3600` 会为这个长时间运行的多节点任务提高 vLLM engine watchdog 的超时时间。
+当前固定版本的 vLLM engine loop 不使用 `VLLM_ENGINE_ITERATION_TIMEOUT_S`。设置它不能提供上游 recipe 的 scheduler watchdog。
 
 #### 网络
 

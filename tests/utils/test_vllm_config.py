@@ -4,6 +4,7 @@ import sys
 import tempfile
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -23,6 +24,36 @@ def _write_yaml(data: dict) -> str:
 
 
 class TestVllmConfigUpdateWeights:
+    @pytest.mark.parametrize("update_weights,level", [(True, 2), (False, 1)])
+    @pytest.mark.parametrize("recover", [False, True])
+    def test_offload_preserves_frozen_weights(self, monkeypatch, update_weights, level, recover):
+        from vime.backends.vllm_utils import engine_group
+
+        engine = Mock()
+        group = engine_group.ServerGroup(
+            args=Namespace(num_gpus_per_node=1),
+            pg=None,
+            all_engines=[None if recover else engine],
+            num_gpus_per_engine=1,
+            num_new_engines=0,
+            needs_offload=True,
+            model_path="frozen-model",
+        )
+
+        def start_engines(port_cursors):
+            group.all_engines = [engine]
+            group.num_new_engines = 1
+            return [], port_cursors
+
+        monkeypatch.setattr(group, "start_engines", start_engines)
+        monkeypatch.setattr(engine_group.ray, "get", lambda handles: handles)
+        server = engine_group.RolloutServer(server_groups=[group], update_weights=update_weights)
+        if recover:
+            server.recover()
+        else:
+            server.offload()
+        engine.release_memory_occupation.remote.assert_called_once_with(level=level)
+
     def test_update_weights_defaults_to_none(self):
         """Models without explicit update_weights parse as None (resolved to True/False at runtime by VllmConfig.resolve based on hf_checkpoint match)."""
         from vime.backends.vllm_utils.vllm_config import VllmConfig
@@ -42,6 +73,8 @@ class TestVllmConfigUpdateWeights:
         # Parsed default is None; VllmConfig.resolve() later infers True/False from
         # whether model_path matches args.hf_checkpoint.
         assert config.models[0].update_weights is None
+        config.models[0].resolve(Namespace(hf_checkpoint="/tmp/hf", rollout_num_gpus_per_engine=1))
+        assert config.models[0].update_weights is True
 
     def test_update_weights_explicit_false(self):
         """Models with update_weights: false should be parsed correctly."""

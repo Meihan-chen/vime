@@ -12,6 +12,7 @@ ARG FLASH_QLA_COMMIT=821fd9d37ede18fdc2a4e707fefe3770bfc32e58
 ARG TRANSFORMER_ENGINE_COMMIT=c9877beb87ad7e711e1869dd0b5062167ede447a
 ARG TRANSFORMER_ENGINE_CUDA_ARCHS=90;100a;103a
 ARG TMS_COMMIT=8d30c59ca12a68d9deccbc9c6599076a1218cbc5
+ARG TMS_CUDA_MAJOR=
 
 ARG ENABLE_CUDA_13=1
 ARG FA2_MAX_JOBS=64
@@ -97,7 +98,7 @@ RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
 
 # zhuzilin fork builds, grouped together right after Megatron-LM:
 # torch_memory_saver, plus the GLM-5 train/rollout alignment kernels.
-RUN TMS_CUDA_MAJOR="$(python -c 'import torch; print(torch.version.cuda.split(".")[0])')" && \
+RUN TMS_CUDA_MAJOR="${TMS_CUDA_MAJOR:-$(python -c 'import torch; print(torch.version.cuda.split(".")[0])')}" && \
     export TMS_CUDA_MAJOR && \
     pip install git+https://github.com/zhuzilin/torch_memory_saver.git@${TMS_COMMIT} --no-cache-dir --force-reinstall
 
@@ -118,7 +119,7 @@ RUN git clone https://github.com/zhuzilin/DeepEP.git /root/DeepEP && \
     TORCH_CUDA_ARCH_LIST="${CUDA_ARCHS}" MAX_JOBS=64 python setup.py bdist_wheel && \
     pip install --force-reinstall --no-deps dist/deep_ep-*.whl && \
     cd /root/ && rm -rf DeepEP
-RUN pip install nvidia-modelopt[torch]>=0.37.0 --no-build-isolation
+RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --ignore-installed PyJWT && \
@@ -148,16 +149,21 @@ RUN cd Megatron-LM && \
     rm -f megatron*.patch && \
     pip install -e .
 
-# Patch vLLM with vime's local fixes. vLLM is a pip install (not a git checkout)
-# so apply with plain `git apply` (no --3way). Pull-weights lands first because
-# the general patch also updates gpu_worker.py against the resulting line layout.
+# Patch vLLM with vime's local fixes. vLLM is a pip install (not a git checkout),
+# so apply the independently maintained patches in their validated order.
 COPY docker/patch/${PATCH_VERSION}/vllm-pull_weights.patch /tmp/vllm-pull_weights.patch
 COPY docker/patch/${PATCH_VERSION}/vllm.patch /tmp/vllm.patch
+COPY docker/patch/${PATCH_VERSION}/vllm-pd-request-metrics.patch /tmp/vllm-pd-request-metrics.patch
+COPY docker/patch/${PATCH_VERSION}/vllm-inflight-queue-diagnostics.patch /tmp/vllm-inflight-queue-diagnostics.patch
 RUN VLLM_SITE="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')" && \
     cd "$VLLM_SITE" && \
     git apply -v /tmp/vllm-pull_weights.patch && \
     git apply -v --allow-empty /tmp/vllm.patch && \
-    rm /tmp/vllm-pull_weights.patch /tmp/vllm.patch
+    git apply -v /tmp/vllm-pd-request-metrics.patch && \
+    git apply -v /tmp/vllm-inflight-queue-diagnostics.patch && \
+    rm /tmp/vllm-pull_weights.patch /tmp/vllm.patch \
+       /tmp/vllm-pd-request-metrics.patch \
+       /tmp/vllm-inflight-queue-diagnostics.patch
 
 # ====================================== Install main package ============================================
 

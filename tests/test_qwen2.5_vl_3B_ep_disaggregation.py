@@ -177,7 +177,7 @@ async def _generate(args, messages: list[dict[str, Any]], *, epd_server=None) ->
             if group.worker_type == "encoder"
         ]
         assert any(
-            Path(path).glob("*/encoder_cache.safetensors") for path in storage_paths
+            any(Path(path).glob("*/encoder_cache.safetensors")) for path in storage_paths
         ), "encoder did not publish an external EC cache"
     render_data = await post(
         f"{base_url}/v1/chat/completions/render",

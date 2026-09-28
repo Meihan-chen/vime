@@ -142,7 +142,7 @@ MTP_ARGS=(
 - 提供一个 `HOSTFILE` 列出 worker IP（每行一个），并在启动前 `export HOSTFILE=/path/to/hostfile`；
 - 并行度需要成套调整。默认示例使用 TP=8、PP=4、EP=16、CP=2，rollout 侧则使用 32 张卡 / engine + vLLM DP attention。
 
-如果 rollout GPU 数与 expert 数（160）之间不能整除，可以通过 `--vllm-eplb-config` 增加冗余 expert。
+如果 rollout GPU 数与 expert 数（160）之间不能整除，可以通过 `--vllm-enable-eplb` 启用 EPLB，并通过 `--vllm-eplb-config` 增加冗余 expert。
 
 ## FP8 Rollout
 

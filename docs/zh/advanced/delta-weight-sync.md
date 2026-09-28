@@ -56,4 +56,4 @@ delta 始终用 zstd（level 1）压缩；profiling 显示对这类数据它在 
 在 POSIX 共享文件系统（NFS、Lustre……）上不需要额外步骤。对于需要显式 commit/refresh 才能让写入跨 host 可见的对象存储挂载，可以提供两个可选 hook（通过 import 路径加载——vime 和 vllm 里都不存在任何厂商特定代码）：
 
 - `--custom-update-weight-post-write-path`（vime，训练端）：在一个版本的文件写完之后、通知 engine 读取之前调用（例如把待写入数据上传到底层对象存储）。签名：`hook(args, version_dir, rollout_engines)`。
-- `--custom-update-weight-pre-read-path`（vime，engine 端）：在每个 host 上、`/pull_weights` 读取 delta 目录之前于 engine 内部调用（例如刷新挂载视图）。签名：`hook(delta_dir, target_version)`。
+- `--vllm-custom-pull-weights-pre-read-hook`（vllm server 参数，engine 端）：在每个 host 上、`/pull_weights` 读取 delta 目录之前于 engine 内部调用（例如刷新挂载视图）。签名：`hook(delta_dir, target_version)`。

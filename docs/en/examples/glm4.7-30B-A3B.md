@@ -136,6 +136,7 @@ VLLM_ARGS=(
    --vllm-gpu-memory-utilization 0.7
    --vllm-data-parallel-size 3
    --vllm-enable-expert-parallel
-   --vllm-eplb-config '{"num_redundant_experts": 16}'
+   --vllm-enable-eplb
+   --vllm-eplb-config '{"num_redundant_experts": 8}'
 )
 ```

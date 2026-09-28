@@ -23,7 +23,7 @@ import os
 import subprocess
 
 GPU_QUEUE = "mithril-h100-pool"
-CI_IMAGE = os.environ.get("VIME_CI_IMAGE", "vllm/vime:latest")
+CI_IMAGE = "vllm/vime:latest"
 HF_CACHE_HOST_PATH = "/mnt/hf-cache"
 HF_HOME = "/root/.cache/huggingface"
 NODE_INSTANCE_TYPE = "gpu-h100-sxm"
@@ -43,24 +43,24 @@ SUITES = {
     ],
     "megatron": [
         ("test_full_disk_weight_update.py", 4, "", {}),
-        ("test_quick_start_glm4_9B.py", 8, "", {}),
+        ("test_quick_start_glm4_9B.py", 8, "", {"ENABLE_EVAL": "0"}),
         ("test_glm4.7_30B_A3B_pd_mooncake.py", 8, "", {}),
         (
             "test_qwen3_30B_A3B.py",
             8,
             "",
-            {"USE_DEEPEP": "1", "USE_FP8_ROLLOUT": "1"},
+            {"USE_DEEPEP": "1", "USE_FP8_ROLLOUT": "1", "ENABLE_EVAL": "0"},
         ),
         ("test_qwen3.6_35B_A3B_pd_mooncake.py", 8, "", {"USE_DEEPEP": "1"}),
         ("test_qwen3_30B_A3B_r3.py", 8, "", {"USE_DEEPEP": "1", "USE_FP8_ROLLOUT": "1", "ENABLE_EVAL": "0"}),
         ("test_qwen3_30B_A3B_r3.py", 8, "", {"ENABLE_EVAL": "0"}),
-        ("test_qwen3_4B_ppo.py", 8, "", {}),
-        ("test_qwen3_4B_ppo_disaggregate.py", 8, "", {}),
-        ("test_qwen3_4B_ppo_train_critic_only.py", 8, "", {}),
+        ("test_qwen3_4B_ppo.py", 8, "", {"ENABLE_EVAL": "0"}),
+        ("test_qwen3_4B_ppo_disaggregate.py", 8, "", {"ENABLE_EVAL": "0"}),
+        ("test_qwen3_4B_ppo_train_critic_only.py", 8, "", {"ENABLE_EVAL": "0"}),
         ("test_ppo_logprob_entropy_gpu.py", 2, "", {}),
         ("test_release_train.py", 4, "", {}),
         ("test_qwen3_4B_streaming_partial_rollout.py", 8, "", {}),
-        ("test_moonlight_16B_A3B.py", 8, "", {}),
+        ("test_moonlight_16B_A3B.py", 8, "", {"ENABLE_EVAL": "0"}),
         ("test_moonlight_16B_A3B_r3.py", 8, "", {"ENABLE_EVAL": "0"}),
         ("test_mimo_7B_mtp_only_grad.py", 8, "", {}),
         ("test_qwen2.5_0.5B_debug_rollout_then_train.py", 8, "", {}),

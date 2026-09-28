@@ -7,7 +7,7 @@ import json
 import logging
 import uuid
 from argparse import Namespace
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from typing import Any
 
@@ -191,6 +191,8 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size = 0
         self.pendings = set()
         self.aborted = False
+        self.cancellable_tasks = set()
+        self.active_server_generations = 0
 
     def submit_generate_tasks(self, samples: list[list[Sample]]) -> None:
         for group in samples:
@@ -227,8 +229,14 @@ def _build_inference_sampling_params(sampling_params: dict[str, Any]) -> dict[st
         sp["stop_token_ids"] = sampling_params["stop_token_ids"]
     if sampling_params.get("seed") is not None:
         sp["seed"] = sampling_params["seed"]
+    if sampling_params.get("min_new_tokens") is not None:
+        sp["min_tokens"] = sampling_params["min_new_tokens"]
+    if sampling_params.get("repetition_penalty") is not None:
+        sp["repetition_penalty"] = sampling_params["repetition_penalty"]
     if sampling_params.get("skip_special_tokens") is not None:
         sp["skip_special_tokens"] = bool(sampling_params["skip_special_tokens"])
+    if sampling_params.get("spaces_between_special_tokens") is not None:
+        sp["spaces_between_special_tokens"] = bool(sampling_params["spaces_between_special_tokens"])
     return sp
 
 
@@ -413,6 +421,20 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     skip_decode = True if skip_sp is None else bool(skip_sp)
     text = state.tokenizer.decode(new_response_tokens, skip_special_tokens=skip_decode) if new_response_tokens else ""
 
+    sample.append_response_tokens(
+        args,
+        tokens=new_response_tokens,
+        log_probs=new_response_log_probs,
+        trainable=True,
+        meta_info=_inference_generate_meta_info(output),
+        text=text,
+    )
+
+    return sample
+
+
+def _inference_generate_meta_info(output: dict[str, Any]) -> dict[str, Any]:
+    choice = output["choices"][0]
     # Build meta_info from the vLLM `choices` response format.
     fr = choice.get("finish_reason") or "stop"
     if isinstance(fr, dict):
@@ -453,17 +475,37 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         for token_ids in sampling_mask:
             offsets.append(offsets[-1] + len(token_ids))
         meta["top_p_token_offsets"] = offsets
+    return meta
 
-    sample.append_response_tokens(
-        args,
-        tokens=new_response_tokens,
-        log_probs=new_response_log_probs,
-        trainable=True,
-        meta_info=meta,
-        text=text,
-    )
 
-    return sample
+async def _run_request_abortable_generate(
+    state: GenerateState,
+    sample: Sample,
+    generate_call: Awaitable[Sample | list[Sample]],
+) -> Sample | list[Sample]:
+    task = asyncio.current_task()
+    assert task is not None
+    state.cancellable_tasks.add(task)
+    try:
+        return await generate_call
+    except asyncio.CancelledError:
+        if task in state.cancellable_tasks:
+            raise
+        sample.status = Sample.Status.ABORTED
+        return sample
+    finally:
+        state.cancellable_tasks.discard(task)
+
+
+async def _run_server_abort_generate(
+    state: GenerateState,
+    generate_call: Awaitable[Sample | list[Sample]],
+) -> Sample | list[Sample]:
+    state.active_server_generations += 1
+    try:
+        return await generate_call
+    finally:
+        state.active_server_generations -= 1
 
 
 @trace_function("generate_and_rm", target="sample")
@@ -493,18 +535,18 @@ async def generate_and_rm(
             return sample
 
         with state.dp_rank_context() as _:
-            # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
-            custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
+            custom_func_path = sample.generate_function_path or args.custom_generate_function_path
+            generate_func = load_function(custom_func_path) if custom_func_path is not None else generate
 
-            if custom_func_path is not None:
-                custom_generate_func = load_function(custom_func_path)
-                # if signature has evaluation, pass evaluation
-                if "evaluation" in inspect.signature(custom_generate_func).parameters:
-                    sample = await custom_generate_func(args, sample, sampling_params, evaluation=evaluation)
-                else:
-                    sample = await custom_generate_func(args, sample, sampling_params)
+            if custom_func_path is not None and "evaluation" in inspect.signature(generate_func).parameters:
+                generate_call = generate_func(args, sample, sampling_params, evaluation=evaluation)
             else:
-                sample = await generate(args, sample, sampling_params)
+                generate_call = generate_func(args, sample, sampling_params)
+
+            if getattr(generate_func, "abort_mode", None) == "request":
+                sample = await _run_request_abortable_generate(state, sample, generate_call)
+            else:
+                sample = await _run_server_abort_generate(state, generate_call)
 
     sample = await apply_rollout_sample_hooks(args, sample, evaluation=evaluation)
 
@@ -588,8 +630,14 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
+    cancellable_tasks = list(state.cancellable_tasks)
+    state.cancellable_tasks.difference_update(cancellable_tasks)
+    for task in cancellable_tasks:
+        task.cancel()
+
     loop = asyncio.get_running_loop()
-    if state.pendings:
+    server_abort = state.active_server_generations > 0
+    if server_abort:
         base = f"http://{args.vllm_router_ip}:{args.vllm_router_port}"
         response = await get(f"{base}/workers")
         urls = [worker["url"] for worker in response["workers"]]
@@ -597,6 +645,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         # Delete-type abort: drop in-flight requests without pausing the scheduler.
         await abort_inflight_requests(urls)
         last_sweep = loop.time()
+
+    await asyncio.gather(*cancellable_tasks, return_exceptions=True)
 
     # make sure all the pending tasks are finished
     count = 0
@@ -609,7 +659,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
 
         # Re-sweep on a fixed interval to truncate late stragglers (e.g. a
         # multi-turn turn-2 fired after the initial abort), regardless of drain.
-        if loop.time() - last_sweep >= _ABORT_RESWEEP_INTERVAL_S:
+        if server_abort and loop.time() - last_sweep >= _ABORT_RESWEEP_INTERVAL_S:
             await abort_inflight_requests(urls)
             last_sweep = loop.time()
 
@@ -619,6 +669,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         # for partial rollout, collect the partial samples into the data buffer
         for task in done:
             group = task.result()
+            if not any(sample.status == Sample.Status.ABORTED and sample.response_length > 0 for sample in group):
+                continue
             for sample in group:
                 if sample.response and "start_rollout_id" not in sample.metadata:
                     sample.metadata["start_rollout_id"] = rollout_id
