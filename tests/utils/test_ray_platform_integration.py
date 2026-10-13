@@ -162,7 +162,16 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
     )
     assert group.create() == [0]
 
-    assert runtime_env_inputs[0][0] is args
+    # RayTrainGroup deep-copies args, so identity against the caller's object no
+    # longer holds. The contract that matters is that the platform hook is handed
+    # the very args the group uses everywhere else, with the caller's values
+    # intact, so platform env choices cannot diverge from training choices.
+    received_args = runtime_env_inputs[0][0]
+    assert received_args is group.args
+    assert received_args is not args
+    assert received_args.train_env_vars == args.train_env_vars
+    assert received_args.offload_train == args.offload_train
+    assert received_args.colocate == args.colocate
     assert runtime_env_inputs[0][1]["USER_ENV"] == "yes"
     assert remote_declarations[0]["runtime_env"]["env_vars"]["PLATFORM_ENV"] == "1"
     assert remote_declarations[0]["num_gpus"] == 1
@@ -197,10 +206,12 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
             return FakeEngine()
 
     monkeypatch.setattr(rollout_module.ray, "remote", lambda _actor_impl: FakeRemoteActor())
+    # start_engines caches each engine's URL before init can fail, so the
+    # allocator has to hand back a real address, not an empty mapping.
     monkeypatch.setattr(
         rollout_module,
         "_allocate_rollout_engine_addr_and_ports_normal",
-        lambda **_kwargs: ({0: {}}, {0: 15001}),
+        lambda **_kwargs: ({0: {"host": "127.0.0.1", "port": 15000, "nccl_port": 15002}}, {0: 15001}),
     )
 
     args = SimpleNamespace(
@@ -223,6 +234,7 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
 
     assert handles == ["init-ref"]
     assert cursors == {0: 15001}
+    assert group.engine_urls[0] == "http://127.0.0.1:15000"
     if is_npu:
         assert runtime_env_inputs[0][0] is args
         assert actor_options[0]["runtime_env"]["env_vars"]["PLATFORM_ENV"] == "rollout"
