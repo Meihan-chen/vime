@@ -11,6 +11,7 @@ the actual `exec_command` calls live in `command_utils`.
 """
 
 import json
+import os
 import shlex
 from dataclasses import dataclass, field
 
@@ -27,6 +28,60 @@ class Platform:
 
     def ray_start_args(self, num_devices: int) -> str:
         return self.ray_args.format(n=num_devices)
+
+
+# ── NPU search paths (overridable; defaults match the reference NPU image) ────
+
+_ASCEND_HOME_DEFAULT = "/usr/local/Ascend"
+_REPO_ROOT_DEFAULT = "/root"
+
+
+def _ascend_home() -> str:
+    return os.environ.get("ASCEND_HOME", _ASCEND_HOME_DEFAULT)
+
+
+def _toolkit_home() -> str:
+    return os.environ.get("ASCEND_TOOLKIT_HOME", f"{_ascend_home()}/ascend-toolkit/latest")
+
+
+def _npu_pythonpath() -> str:
+    """Megatron forks plus the CANN python bindings."""
+    if (configured := os.environ.get("VIME_NPU_PYTHONPATH")) is not None:
+        return configured
+    repos = os.environ.get("VIME_REPO_ROOT", _REPO_ROOT_DEFAULT)
+    toolkit = _toolkit_home()
+    return ":".join(
+        [
+            f"{repos}/Megatron-LM",
+            f"{repos}/vime",
+            f"{repos}/MegatronAdaptor",
+            f"{repos}/TransformerEngineNPU",
+            f"{toolkit}/python/site-packages",
+            f"{toolkit}/tools/ms_fmk_transplt/torch_npu_bridge",
+        ]
+    )
+
+
+def _npu_ld_library_path() -> str:
+    """Driver, toolkit, ATB and CANN runtime libraries."""
+    if (configured := os.environ.get("VIME_NPU_LD_LIBRARY_PATH")) is not None:
+        return configured
+    ascend = _ascend_home()
+    toolkit = _toolkit_home()
+    return ":".join(
+        [
+            f"{ascend}/driver/lib64",
+            f"{ascend}/driver/lib64/driver",
+            f"{ascend}/driver/lib64/common",
+            f"{toolkit}/lib64",
+            f"{toolkit}/compiler/lib64/plugin/opskernel",
+            f"{toolkit}/compiler/lib64/plugin/nnengine",
+            f"{toolkit}/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/",
+            f"{ascend}/nnal/atb/latest/atb/cxx_abi_1/lib",
+            f"{ascend}/cann/lib64",
+            f"{ascend}/cann/aarch64-linux/devlib",
+        ]
+    )
 
 
 # ── Registry ────────────────────────────────────────────────────────────────
@@ -51,21 +106,8 @@ register(
         ray_args="--num-gpus 0 --resources '{{\"NPU\": {n}}}'",
         torch_dist_convert=False,  # Keep HF tests unchanged; torch_dist has a separate opt-in test.
         env={
-            "PYTHONPATH": (
-                "/root/Megatron-LM:/root/vime:"
-                "/root/MegatronAdaptor:/root/TransformerEngineNPU:"
-                "/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:"
-                "/usr/local/Ascend/ascend-toolkit/latest/tools/ms_fmk_transplt/torch_npu_bridge"
-            ),
-            "LD_LIBRARY_PATH": (
-                "/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/driver:"
-                "/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/ascend-toolkit/latest/lib64:"
-                "/usr/local/Ascend/ascend-toolkit/latest/compiler/lib64/plugin/opskernel:"
-                "/usr/local/Ascend/ascend-toolkit/latest/compiler/lib64/plugin/nnengine:"
-                "/usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/:"
-                "/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/lib:"
-                "/usr/local/Ascend/cann/lib64:/usr/local/Ascend/cann/aarch64-linux/devlib"
-            ),
+            "PYTHONPATH": _npu_pythonpath(),
+            "LD_LIBRARY_PATH": _npu_ld_library_path(),
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES": "1",
             "HCCL_HOST_SOCKET_PORT_RANGE": "60000-60050",
