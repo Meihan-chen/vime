@@ -101,7 +101,7 @@ def test_multi_agent_emits_shared_rollout_id(exit_stage, expected_count):
         return [1.0] * len(samples)
 
     class SelectorAgent:
-        async def select(self, args, problem_statement, solutions):
+        async def select(self, args, problem_statement, solutions, worker_id=0):
             if exit_stage != "selector":
                 args.results_dict["selector"].append(Sample(index=0, prompt=problem_statement))
             return None
