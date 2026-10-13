@@ -34,6 +34,7 @@ ENV SOC_VERSION=$SOC_VERSION \
 # docker/npu_patch/series.conf synchronized.
 COPY docker/npu_patch /opt/npu_patch
 COPY docker/patch/latest/megatron.patch /opt/npu_patch/megatron-common.patch
+COPY docker/patch/latest/vllm.patch /opt/npu_patch/vllm-common.patch
 
 RUN git config --global http.sslVerify false
 
@@ -52,7 +53,13 @@ RUN if [ -n "$APTMIRROR" ];then sed -i "s@^\(deb.*\)https\?://[a-z0-9.-]*\.ubunt
 
 # vllm and vllm-ascend are installed editable (-e) in the base image; apply the
 # NPU colocate patches directly to their source trees.
+# Two-stage, same shape as Megatron below: the shared patch carries what vime
+# needs from vLLM on every platform, the NPU patch only the Ascend increment.
 RUN git -C /vllm-workspace/vllm apply --check --whitespace=nowarn \
+      /opt/npu_patch/vllm-common.patch && \
+    git -C /vllm-workspace/vllm apply --whitespace=nowarn \
+      /opt/npu_patch/vllm-common.patch && \
+    git -C /vllm-workspace/vllm apply --check --whitespace=nowarn \
       /opt/npu_patch/vllm.patch && \
     git -C /vllm-workspace/vllm apply --whitespace=nowarn \
       /opt/npu_patch/vllm.patch
