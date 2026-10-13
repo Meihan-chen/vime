@@ -306,7 +306,12 @@ def test_compute_server_args_model_path_override_wins(vllm_args, monkeypatch):
 
 
 @pytest.mark.unit
-def test_compute_server_args_external_check_fields_skip_orchestration_fields(vllm_args):
+def test_compute_server_args_external_check_fields_skip_orchestration_fields(vllm_args, monkeypatch):
+    # The backend assertion below is CUDA's, so do not read the ambient platform.
+    from vime.platforms import get_platform
+
+    monkeypatch.setattr(mod, "current_platform", lambda: get_platform("cuda"))
+
     sa, check_fields = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
     assert "model" not in check_fields
     assert "host" not in check_fields

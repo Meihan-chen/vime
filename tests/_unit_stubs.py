@@ -185,6 +185,29 @@ def isolated_sys_modules(names: Iterable[str]):
         restore_sys_modules(saved)
 
 
+@contextmanager
+def cuda_platform_selected():
+    """Pin platform selection to CUDA for the duration of the block.
+
+    Needed around fixtures that install Megatron stubs; see tests/conftest.py.
+    """
+    import os
+
+    from vime.platforms import reset_platform_cache
+
+    previous = os.environ.get("VIME_PLATFORM")
+    os.environ["VIME_PLATFORM"] = "cuda"
+    reset_platform_cache()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("VIME_PLATFORM", None)
+        else:
+            os.environ["VIME_PLATFORM"] = previous
+        reset_platform_cache()
+
+
 def install_megatron_mpu_stub() -> MagicMock:
     """Stub ``megatron.core.mpu`` (and minimal submodules) when Megatron is absent."""
     mpu_stub = MagicMock()

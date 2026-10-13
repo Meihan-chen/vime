@@ -46,7 +46,8 @@ def update_module():
     _unit_stubs.install_ray_stub()
     _unit_stubs.install_vime_distributed_utils_stub()
     try:
-        yield importlib.import_module(MODULE_PATH)
+        with _unit_stubs.cuda_platform_selected():
+            yield importlib.import_module(MODULE_PATH)
     finally:
         _unit_stubs.restore_sys_modules(saved)
 
