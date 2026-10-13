@@ -13,16 +13,20 @@ index b0d7cf2..d03cba8 100644
      def aggregate(
          self, other: "KVConnectorWorkerMetadata"
 diff --git a/vllm/engine/protocol.py b/vllm/engine/protocol.py
-index 0f61b73..1d38896 100644
+index 0f61b73..e44b96c 100644
 --- a/vllm/engine/protocol.py
 +++ b/vllm/engine/protocol.py
-@@ -279,3 +279,7 @@ class EngineClient(ABC):
+@@ -279,3 +279,11 @@ class EngineClient(ABC):
      async def get_weight_version(self) -> str:
          """Return the latest committed weight version."""
          raise NotImplementedError
 +
 +    async def get_inflight_queue_diagnostics(self, limit: int) -> list[dict[str, Any]]:
 +        """Return bounded snapshots of in-flight request queues."""
++        raise NotImplementedError
++
++    async def shutdown_weight_transfer_engine(self) -> None:
++        """Release the trainer connection without shutting down inference."""
 +        raise NotImplementedError
 diff --git a/vllm/entrypoints/generate/base/serving.py b/vllm/entrypoints/generate/base/serving.py
 index d6ae0a2..8071171 100644
@@ -379,6 +383,23 @@ index bbbd851..dc02efe 100644
                      choices=[],
                      usage=final_usage_info,
                  )
+diff --git a/vllm/entrypoints/serve/dev/rlhf/api_router.py b/vllm/entrypoints/serve/dev/rlhf/api_router.py
+index 392fcf5..6a0b4ee 100644
+--- a/vllm/entrypoints/serve/dev/rlhf/api_router.py
++++ b/vllm/entrypoints/serve/dev/rlhf/api_router.py
+@@ -172,6 +172,12 @@ async def init_weight_transfer_engine(raw_request: Request):
+     return JSONResponse(content={"message": "Weight transfer initialized"})
+
+
++@router.post("/shutdown_weight_transfer_engine")
++async def shutdown_weight_transfer_engine(raw_request: Request):
++    await engine_client(raw_request).shutdown_weight_transfer_engine()
++    return JSONResponse(content={"message": "Weight transfer shut down"})
++
++
+ @router.post("/start_weight_update")
+ async def start_weight_update(raw_request: Request):
+     await engine_client(raw_request).start_weight_update()
 diff --git a/vllm/entrypoints/serve/instrumentator/basic.py b/vllm/entrypoints/serve/instrumentator/basic.py
 index be091a1..73f5bbc 100644
 --- a/vllm/entrypoints/serve/instrumentator/basic.py
@@ -652,16 +673,20 @@ index 5ae9ee0..a31ad48 100644
      def finished(self) -> bool:
          return self.finish_reason is not None
 diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
-index dd5cb2c..7daec85 100644
+index dd5cb2c..7dba793 100644
 --- a/vllm/v1/engine/async_llm.py
 +++ b/vllm/v1/engine/async_llm.py
-@@ -1165,3 +1165,6 @@ class AsyncLLM(EngineClient):
+@@ -1165,3 +1165,10 @@ class AsyncLLM(EngineClient):
      async def get_weight_version(self) -> str:
          """Return the latest committed weight version."""
          return await self.engine_core.get_weight_version_async()
 +
 +    async def get_inflight_queue_diagnostics(self, limit: int) -> list[dict[str, Any]]:
 +        return await self.engine_core.get_inflight_queue_diagnostics_async(limit)
++
++    async def shutdown_weight_transfer_engine(self) -> None:
++        """Release the trainer connection without shutting down inference."""
++        await self.collective_rpc("shutdown_weight_transfer_engine")
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
 index c734e67..95358ff 100644
 --- a/vllm/v1/engine/core.py
