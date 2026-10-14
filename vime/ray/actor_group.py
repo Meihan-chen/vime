@@ -102,16 +102,13 @@ class RayTrainGroup:
         self._actor_handlers = []
         master_addr, master_port = None, None
         for rank in range(world_size):
-            resource_options = {"num_gpus": num_gpus_per_actor}
-            if platform.is_npu:
-                resource_options = {"num_gpus": 0, **platform.ray.actor_options(num_gpus_per_actor)}
             actor = TrainRayActor.options(
                 num_cpus=num_gpus_per_actor,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=pg,
                     placement_group_bundle_index=reordered_bundle_indices[rank],
                 ),
-                **resource_options,
+                **platform.ray.actor_options(num_gpus_per_actor),
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())

@@ -23,7 +23,8 @@ class RayResourceSpec:
     def actor_options(self, fraction: float) -> dict[str, object]:
         if self.uses_ray_gpu_resource:
             return {"num_gpus": fraction}
-        return {"resources": {self.resource_name: fraction}}
+        # Ray would otherwise schedule against its own GPU resource as well.
+        return {"num_gpus": 0, "resources": {self.resource_name: fraction}}
 
     def accelerator_ids(self) -> list[str]:
         import ray

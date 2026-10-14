@@ -88,7 +88,7 @@ def test_npu_safe_empty_cache_wraps_original_once(monkeypatch):
     ("name", "bundle", "actor_options"),
     [
         ("cuda", {"GPU": 2, "CPU": 3}, {"num_gpus": 0.4}),
-        ("npu", {"NPU": 2, "CPU": 3}, {"resources": {"NPU": 0.4}}),
+        ("npu", {"NPU": 2, "CPU": 3}, {"num_gpus": 0, "resources": {"NPU": 0.4}}),
     ],
 )
 def test_ray_resource_contract(monkeypatch, name, bundle, actor_options):

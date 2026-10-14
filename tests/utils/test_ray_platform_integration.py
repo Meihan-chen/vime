@@ -49,7 +49,7 @@ def test_placement_group_uses_platform_ray_resource_contract(monkeypatch):
     ray_ops = SimpleNamespace(
         resource_name="ACCEL",
         bundle_resources=Mock(side_effect=lambda: {"ACCEL": 1, "CPU": 1}),
-        actor_options=Mock(side_effect=lambda fraction: {"resources": {"ACCEL": fraction}}),
+        actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
     )
     monkeypatch.setattr(placement_group_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=True))
 
@@ -116,7 +116,7 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
     ray_ops = SimpleNamespace(
         train_runtime_env=lambda args, env: runtime_env_inputs.append((args, dict(env)))
         or {**env, "PLATFORM_ENV": "1"},
-        actor_options=Mock(side_effect=lambda fraction: {"resources": {"ACCEL": fraction}}),
+        actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
     )
     monkeypatch.setattr(actor_group_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=True))
 
@@ -177,9 +177,14 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
 
     runtime_env_inputs = []
     ray_ops = SimpleNamespace(
-        rollout_runtime_env=lambda args, env: runtime_env_inputs.append((args, dict(env)))
-        or {**env, "PLATFORM_ENV": "rollout"},
-        actor_options=Mock(side_effect=lambda fraction: {"resources": {"ACCEL": fraction}}),
+        rollout_runtime_env=lambda args, env: (runtime_env_inputs.append((args, dict(env))) or {**env, "PLATFORM_ENV": "rollout"})
+        if is_npu
+        else dict(env),
+        actor_options=Mock(
+            side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}
+            if is_npu
+            else {"num_gpus": fraction}
+        ),
     )
     monkeypatch.setattr(rollout_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=is_npu))
 
@@ -234,7 +239,7 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
         assert "resources" not in actor_options[0]
         assert "PLATFORM_ENV" not in actor_options[0]["runtime_env"]["env_vars"]
         assert actor_options[0]["num_gpus"] == 0.2
-        ray_ops.actor_options.assert_not_called()
+        ray_ops.actor_options.assert_called_once_with(0.2)
 
     # The main placement check must still run before an invalid slot is used.
     group.all_engines = [None]

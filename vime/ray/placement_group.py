@@ -86,14 +86,13 @@ def _create_placement_group(num_gpus):
     # use info actor to get the GPU id
     info_actors = []
     for i in range(num_bundles):
-        resource_options = {"num_gpus": 0, **platform.ray.actor_options(1)} if platform.is_npu else {}
         info_actors.append(
             InfoActor.options(
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=pg,
                     placement_group_bundle_index=i,
                 ),
-                **resource_options,
+                **platform.ray.actor_options(1),
             ).remote()
         )
     gpu_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])

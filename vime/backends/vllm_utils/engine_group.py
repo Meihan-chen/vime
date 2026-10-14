@@ -146,16 +146,13 @@ class ServerGroup:
             )
             if platform.is_npu:
                 env_vars = platform.ray.rollout_runtime_env(self.args, env_vars)
-            resource_options = {"num_gpus": num_gpus}
-            if platform.is_npu:
-                resource_options = {"num_gpus": 0, **platform.ray.actor_options(num_gpus)}
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,
                 scheduling_strategy=scheduling_strategy,
                 runtime_env={
                     "env_vars": add_default_ray_env_vars(env_vars),
                 },
-                **resource_options,
+                **platform.ray.actor_options(num_gpus),
             ).remote(
                 self.args,
                 rank=global_rank,
