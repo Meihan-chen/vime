@@ -14,7 +14,9 @@ from vime.utils.disk_delta import checksum, overwrite_encode
 
 NUM_GPUS = 0
 ROOT = Path(__file__).resolve().parents[1]
-PATCHES = sorted((ROOT / "docker" / "patch").glob("*/vllm-pull_weights.patch"))
+PATCHES = sorted((ROOT / "docker" / "patch").glob("*/vllm-pull_weights.patch")) + [
+    ROOT / "docker/npu_patch/vllm.patch"
+]
 
 
 def _load_trainer():
@@ -82,7 +84,8 @@ def test_unindexed_checkpoint_remains_supported(reader, tmp_path):
 
 @pytest.mark.parametrize("patch", PATCHES, ids=[p.parent.name for p in PATCHES])
 @pytest.mark.parametrize("encoding", ["xor", "overwrite"])
-def test_delta_updates_indexed_weights(patch, encoding, tmp_path, monkeypatch):
+@pytest.mark.parametrize("checksum_failure", [False, True])
+def test_delta_updates_indexed_weights(patch, encoding, checksum_failure, tmp_path, monkeypatch):
     trainer, receiver = _load_trainer(), _load_receiver(patch)
     original_glob = receiver.glob.glob
     monkeypatch.setattr(receiver.glob, "glob", lambda pattern: sorted(original_glob(pattern)))
@@ -113,11 +116,36 @@ def test_delta_updates_indexed_weights(patch, encoding, tmp_path, monkeypatch):
             }
         )
     )
-    receiver.pull_checkpoint(str(local), str(base), str(stream), 1)
+    if checksum_failure:
+        # Corrupt a byte not changed by overwrite, so both encodings detect it.
+        damaged = safetensors.numpy.load_file(local / "model.safetensors")["weight"]
+        unchanged = np.flatnonzero(new == old)[0]
+        damaged.view(np.uint8).reshape(-1)[unchanged] ^= 1
+        safetensors.numpy.save_file({"weight": damaged}, local / "model.safetensors")
+        with pytest.raises(RuntimeError, match="Checksum mismatch"):
+            receiver.pull_checkpoint(str(local), str(base), str(stream), 1)
+        assert receiver._read_applied_version(str(local)) == 0
+    else:
+        receiver.pull_checkpoint(str(local), str(base), str(stream), 1)
+        receiver.pull_checkpoint(str(local), str(base), str(stream), 1)
+        assert receiver._read_applied_version(str(local)) == 1
     # The delta's own checksum can pass while the indexed model stays stale.
     loaded = safetensors.numpy.load_file(local / "model.safetensors")["weight"]
-    np.testing.assert_array_equal(loaded.view(np.uint8).reshape(-1), new)
+    if not checksum_failure:
+        np.testing.assert_array_equal(loaded.view(np.uint8).reshape(-1), new)
     np.testing.assert_array_equal(safetensors.numpy.load_file(local / "stale.safetensors")["weight"], 0)
+
+    # A replacement trainer publishes a new full checkpoint; do not retry XOR
+    # against files that were partially written before a checksum failure.
+    full = stream / "weight_v000002"
+    full.mkdir()
+    reset = np.full((2, 2), 7, dtype=np.float32)
+    safetensors.numpy.save_file({"weight": reset}, full / "model.safetensors")
+    (full / "config.json").write_text("{}")
+    receiver.pull_checkpoint(str(local), str(base), str(stream), 2)
+    assert receiver._read_applied_version(str(local)) == 2
+    np.testing.assert_array_equal(safetensors.numpy.load_file(local / "model.safetensors")["weight"], reset)
+    assert not (local / "stale.safetensors").exists()
 
 
 if __name__ == "__main__":
