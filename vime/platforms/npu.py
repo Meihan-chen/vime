@@ -10,7 +10,6 @@ from glob import glob
 from typing import Any
 
 from vime.utils import accelerator
-from vime.utils.accelerator.torch_accelerator import TorchAccelerator
 
 from .base import (
     CheckpointCapabilities,
@@ -22,38 +21,6 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class NPUAccelerator(TorchAccelerator):
-    name = "npu"
-    device_type = "npu"
-    communication_backend_name = "hccl"
-
-    def _module(self):
-        return getattr(importlib.import_module("torch"), "npu", None)
-
-    @property
-    def visible_devices_env(self) -> str:
-        return "ASCEND_RT_VISIBLE_DEVICES"
-
-    def distributed_device_id(self, index=None):
-        # Preserve lazy HCCL initialization instead of CUDA's eager device binding.
-        return None
-
-    def set_allocator_expandable_segments(self) -> bool:
-        # NPU allocator policy belongs to the existing TMS/runtime-env hooks.
-        return False
-
-
-def register_npu_accelerator() -> None:
-    accelerator.register_accelerator(
-        "npu",
-        NPUAccelerator,
-        is_available=lambda: os.environ.get("VIME_PLATFORM", "").strip().lower() != "cuda"
-        and NPUAccelerator().is_available(),
-        priority=300,
-        communication_backends=("hccl",),
-    )
 
 
 def detect_npu() -> bool:
@@ -213,7 +180,6 @@ class NpuTrainingBootstrap(TrainingBootstrap):
         try:
             _ensure_torch_npu()
             # Select NPU before MegatronAdaptor can make torch.cuda appear available.
-            register_npu_accelerator()
             selected = accelerator.get_accelerator()
             if selected.name != "npu":
                 raise RuntimeError(f"NPU bootstrap cannot use an already selected {selected.name!r} accelerator")
@@ -280,8 +246,6 @@ class NpuCheckpointCapabilities(CheckpointCapabilities):
 
 
 def create_npu_platform() -> Platform:
-    # Ray workers also resolve the platform without importing Megatron.
-    register_npu_accelerator()
     return Platform(
         name="npu",
         ray=NpuRayResourceSpec(),

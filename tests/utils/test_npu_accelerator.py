@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from vime.platforms import current_platform, get_platform, npu, reset_platform_cache
-from vime.platforms.npu import NPUAccelerator
+from vime.utils.accelerator.npu import NPUAccelerator
 from vime.utils import accelerator
 
 
@@ -77,9 +77,12 @@ def test_conflicting_overrides_fail_before_bootstrap(monkeypatch, platform, back
         current_platform()
 
 
-def test_registered_npu_does_not_override_explicit_cuda_platform(monkeypatch):
+def test_explicit_cuda_request_wins_over_an_available_npu(monkeypatch):
+    # VIME_ACCELERATOR is the accelerator layer's own switch, and the platform
+    # resolver follows it, so the two stay consistent.
     get_platform("npu")
-    monkeypatch.setenv("VIME_PLATFORM", "cuda")
+    monkeypatch.delenv("VIME_PLATFORM")
+    monkeypatch.setenv("VIME_ACCELERATOR", "cuda")
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: True)
     monkeypatch.setattr(accelerator.CUDAAccelerator, "is_available", lambda self: True)
     assert current_platform().name == "cuda"

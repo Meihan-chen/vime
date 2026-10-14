@@ -45,7 +45,7 @@ def test_platform_ray_accelerator_ids_and_local_mapping(
 def _accelerator_backend(accelerator_module, platform_name):
     if platform_name == "cuda":
         return accelerator_module.CUDAAccelerator()
-    from vime.platforms.npu import NPUAccelerator
+    from vime.utils.accelerator.npu import NPUAccelerator
 
     return NPUAccelerator()
 
