@@ -17,6 +17,16 @@ import pytest
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    # Set before any test module is imported, since the bootstrap this guards
-    # against runs at import time rather than inside a fixture.
+    # Both of these are set before any test module is imported, since what they
+    # guard against runs at import time rather than inside a fixture.
     os.environ.setdefault("VIME_PLATFORM", "cuda")
+
+    # Several modules install Megatron stubs and then import something under
+    # vime.backends.megatron_utils, whose package body asks vendors to install
+    # their patches. A vendor doing that needs the real Megatron and fails
+    # against the stubs. Marking the bootstrap as already done keeps the vendor
+    # support package out of this session; the tests that do exercise it select
+    # the accelerator themselves.
+    from vime.utils import accelerator
+
+    accelerator._NPU_BOOTSTRAP_CHECKED = True

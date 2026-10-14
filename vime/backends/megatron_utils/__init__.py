@@ -2,14 +2,13 @@ import logging
 
 import torch
 
-from vime.platforms import current_platform
+from vime.utils import accelerator, vendor_hooks
 
-# Load NPU prerequisites before the shared Megatron patches.
-current_platform().megatron.bootstrap()
-
-from vime.utils import accelerator
-
+# Selecting the accelerator is what lets a vendor register for the point
+# below, and the patches it installs there have to precede every megatron
+# import in this package.
 accelerator.initialize_accelerator()
+vendor_hooks.run("before_megatron_import")
 
 try:
     import deep_ep

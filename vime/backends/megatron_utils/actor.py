@@ -16,7 +16,7 @@ from vime.observability import train_data_utils, train_metric_utils
 from vime.observability.logging_utils import init_tracking
 from vime.observability.profile_utils import TrainProfiler
 from vime.observability.timer import Timer, inverse_timer, timer, with_defer
-from vime.platforms import current_platform
+from vime.utils import vendor_hooks
 from vime.utils.offload import current as current_offload_policy
 from vime.ray.train_actor import TrainRayActor
 from vime.utils import accelerator
@@ -79,7 +79,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        current_platform().megatron.repatch(args)
+        vendor_hooks.run("after_megatron_args", args)
         if is_megatron_main_rank():
             init_tracking(args, primary=False, role=role)
 
