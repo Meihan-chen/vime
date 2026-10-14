@@ -8,6 +8,7 @@ from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from vime.platforms import current_platform
+from vime.ray.resources import current as current_ray_resource
 from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, add_default_ray_env_vars
 from vime.utils.offload import cuda_offload_env_vars
 
@@ -108,7 +109,7 @@ class RayTrainGroup:
                     placement_group=pg,
                     placement_group_bundle_index=reordered_bundle_indices[rank],
                 ),
-                **platform.ray.actor_options(num_gpus_per_actor),
+                **current_ray_resource().actor_options(num_gpus_per_actor),
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())

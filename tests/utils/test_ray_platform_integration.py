@@ -55,10 +55,11 @@ def test_placement_group_uses_platform_ray_resource_contract(monkeypatch):
 
     ray_ops = SimpleNamespace(
         resource_name="ACCEL",
-        bundle_resources=Mock(side_effect=lambda: {"ACCEL": 1, "CPU": 1}),
+        bundle=Mock(side_effect=lambda: {"ACCEL": 1, "CPU": 1}),
         actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
+        accelerator_ids=lambda: ["unused"],
     )
-    monkeypatch.setattr(placement_group_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=True))
+    monkeypatch.setattr(placement_group_module, "current_ray_resource", lambda: ray_ops)
 
     created = {}
 
@@ -106,7 +107,7 @@ def test_placement_group_uses_platform_ray_resource_contract(monkeypatch):
     assert reordered_ids == ["1", "3"]
     assert [options["resources"] for options in actor_options] == [{"ACCEL": 1}, {"ACCEL": 1}]
     assert [options["num_gpus"] for options in actor_options] == [0, 0]
-    assert ray_ops.bundle_resources.call_count == 2
+    assert ray_ops.bundle.call_count == 2
     assert [entry.args for entry in ray_ops.actor_options.call_args_list] == [(1,), (1,)]
 
 
@@ -126,6 +127,7 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
         actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
     )
     monkeypatch.setattr(actor_group_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=True))
+    monkeypatch.setattr(actor_group_module, "current_ray_resource", lambda: ray_ops)
 
     actor_module = types.ModuleType("vime.backends.megatron_utils.actor")
     actor_module.MegatronTrainRayActor = object
@@ -194,6 +196,7 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
         ),
     )
     monkeypatch.setattr(rollout_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=is_npu))
+    monkeypatch.setattr(rollout_module, "current_ray_resource", lambda: ray_ops)
 
     actor_options = []
 
@@ -269,11 +272,7 @@ def test_train_actor_maps_the_assigned_device_to_a_local_id(
 
     accelerator_ids = Mock(return_value=[assigned_id])
     monkeypatch.setattr(
-        train_actor_module,
-        "current_platform",
-        lambda: _fake_platform(
-            SimpleNamespace(accelerator_ids=accelerator_ids), is_npu=platform_name == "npu"
-        ),
+        train_actor_module, "current_ray_resource", lambda: SimpleNamespace(accelerator_ids=accelerator_ids)
     )
     monkeypatch.setenv(visible_env, visible)
     monkeypatch.setattr(

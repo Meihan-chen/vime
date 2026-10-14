@@ -6,7 +6,7 @@ import ray
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from vime.platforms import current_platform
+from vime.ray.resources import current as current_ray_resource
 
 from .actor_group import RayTrainGroup
 from .utils import add_default_ray_env_vars
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 @ray.remote(num_gpus=1)
 class InfoActor:
     def get_ip_and_gpu_id(self):
-        ray_spec = current_platform().ray
+        ray_spec = current_ray_resource()
         accelerator_ids = ray_spec.accelerator_ids()
         if not accelerator_ids:
             raise RuntimeError(
@@ -53,9 +53,9 @@ def _create_placement_group(num_gpus):
     if num_gpus == 0:
         return None, [], []
 
-    platform = current_platform()
-    resource_name = platform.ray.resource_name
-    bundles = [platform.ray.bundle_resources() for _ in range(num_gpus)]
+    ray_resource = current_ray_resource()
+    resource_name = ray_resource.resource_name
+    bundles = [ray_resource.bundle() for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
     num_bundles = len(bundles)
 
@@ -86,7 +86,7 @@ def _create_placement_group(num_gpus):
                     placement_group=pg,
                     placement_group_bundle_index=i,
                 ),
-                **platform.ray.actor_options(1),
+                **ray_resource.actor_options(1),
             ).remote()
         )
     gpu_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])

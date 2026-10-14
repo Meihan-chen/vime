@@ -10,8 +10,8 @@ import torch.distributed as dist
 
 import vime.utils.eval_config
 from vime.observability.logging_utils import configure_logger
-from vime.platforms import current_platform
 from vime.ray.ray_actor import RayActor
+from vime.ray.resources import current as current_ray_resource
 from vime.utils import accelerator
 from vime.utils.distributed_utils import init_gloo_group
 from vime.utils.memory_utils import clear_memory, print_memory
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_local_gpu_id():
-    return accelerator.resolve_visible_device_id(current_platform().ray.accelerator_ids()[0])
+    return accelerator.resolve_visible_device_id(current_ray_resource().accelerator_ids()[0])
 
 
 class TrainRayActor(RayActor):

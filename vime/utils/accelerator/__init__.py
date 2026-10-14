@@ -170,13 +170,25 @@ def _npu_requested() -> bool:
     return "ASCEND_RT_VISIBLE_DEVICES" in os.environ or bool(os.environ.get("ASCEND_HOME_PATH"))
 
 
+def _load_npu_plugin() -> None:
+    try:
+        from vime_plugins.ascend import register_all
+    except ImportError:
+        logger.warning("Ascend support package is unavailable; NPU-specific behaviour is not registered")
+        return
+    register_all()
+
+
 def _bootstrap_torch_npu_if_needed() -> bool:
     """Bootstrap torch_npu for an already chosen NPU backend at most once."""
     global _NPU_BOOTSTRAP_CHECKED
     if _NPU_BOOTSTRAP_CHECKED:
         return _NPU_RUNTIME_IMPORTED
     _NPU_BOOTSTRAP_CHECKED = True
-    return _try_import_torch_npu()
+    imported = _try_import_torch_npu()
+    if imported:
+        _load_npu_plugin()
+    return imported
 
 
 def _cuda_available() -> bool:
