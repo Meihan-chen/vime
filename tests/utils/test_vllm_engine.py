@@ -319,8 +319,6 @@ def test_compute_server_args_model_path_override_wins(vllm_args, monkeypatch):
 @pytest.mark.unit
 def test_compute_server_args_external_check_fields_skip_orchestration_fields(vllm_args, monkeypatch):
     # The backend assertion below is CUDA's, so do not read the ambient platform.
-    from vime.platforms import get_platform
-
     monkeypatch.setattr(mod, "current_weight_transfer", lambda: weight_transfer_registry.WeightTransfer())
 
     sa, check_fields = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
@@ -411,8 +409,6 @@ def test_compute_server_args_adds_sleep_mode_for_offload_rollout(vllm_args):
     [("cuda", False, "nccl"), ("cuda", True, "ipc"), ("npu", False, "hccl"), ("npu", True, "npu_ipc")],
 )
 def test_compute_server_args_uses_native_platform_backend(vllm_args, monkeypatch, platform_name, colocate, backend):
-    from vime.platforms import get_platform
-
     monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
     vllm_args.vllm_worker_extension_cls = ""
     vllm_args.colocate = colocate
@@ -426,8 +422,6 @@ def test_compute_server_args_uses_native_platform_backend(vllm_args, monkeypatch
 
 @pytest.mark.unit
 def test_compute_server_args_keeps_user_worker_extension(vllm_args, monkeypatch):
-    from vime.platforms import get_platform
-
     monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
     vllm_args.vllm_worker_extension_cls = "example.UserWorkerExtension"
     monkeypatch.setattr(mod, "current_weight_transfer", lambda: _transfer_for("npu"))

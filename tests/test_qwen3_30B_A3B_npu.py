@@ -29,7 +29,7 @@ def prepare(checkpoint_root, torch_dist_ref_load=True):
     U.exec_command(
         "source scripts/models/qwen3-30B-A3B.sh && "
         "TRANSFORMERS_VERBOSITY=error "
-        f"VIME_PLATFORM=npu PYTHONPATH={shlex.quote(str(U.repo_base_dir))}:/root/Megatron-LM:${{PYTHONPATH:-}} "
+        f"VIME_ACCELERATOR=npu PYTHONPATH={shlex.quote(str(U.repo_base_dir))}:/root/Megatron-LM:${{PYTHONPATH:-}} "
         f"{shlex.quote(sys.executable)} -m torch.distributed.run --nproc-per-node 8 "
         "tools/convert_hf_to_torch_dist.py "
         "${MODEL_ARGS[@]} "

@@ -8,8 +8,15 @@ from unittest.mock import Mock
 import pytest
 
 
-def _fake_platform(ray_ops, *, is_npu=False):
-    return SimpleNamespace(ray=ray_ops, is_npu=is_npu)
+
+def _ray_resource_for(accelerator_name):
+    from vime.ray.resources import RayAcceleratorResource
+
+    if accelerator_name == "cuda":
+        return RayAcceleratorResource()
+    from vime_plugins.ascend.ray import NPU_RESOURCE
+
+    return NPU_RESOURCE
 
 
 @pytest.mark.parametrize(
@@ -28,9 +35,7 @@ def test_platform_ray_accelerator_ids_and_local_mapping(
 ):
     import ray
 
-    from vime.platforms import get_platform
-
-    platform = get_platform(platform_name)
+    platform = SimpleNamespace(ray=_ray_resource_for(platform_name))
     monkeypatch.setenv(visible_env, f"unused,{assigned_id}")
     if platform_name == "cuda":
         monkeypatch.setattr(ray, "get_gpu_ids", lambda: [assigned_id])

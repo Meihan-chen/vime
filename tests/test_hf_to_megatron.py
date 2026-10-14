@@ -523,21 +523,23 @@ def test_qwen3_vl_tied_output_uses_language_embedding(top_tied, text_tied, has_h
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("platform", ["cuda", "npu"])
+@pytest.mark.parametrize("reported_partition_dim", [0, 1])
 @pytest.mark.parametrize("expert", [False, True])
 @pytest.mark.parametrize("parallel_size", [1, 2, 4])
-def test_native_fc1_loading_uses_platform_partition_metadata(monkeypatch, platform, expert, parallel_size):
+def test_fc1_shards_on_dim_zero_whichever_dim_is_reported(
+    monkeypatch, reported_partition_dim, expert, parallel_size
+):
+    # Transformer Engine reports 0 for these; some grouped-MoE implementations
+    # report 1 while storing them [out, in] anyway. Both must shard the same.
     mpu = pytest.importorskip("megatron.core").mpu
-    monkeypatch.setenv("VIME_PLATFORM", platform)
     monkeypatch.setattr(mpu, "get_tensor_model_parallel_world_size", lambda: 8 if expert else parallel_size)
     monkeypatch.setattr(mpu, "get_tensor_model_parallel_rank", lambda: 0 if expert else parallel_size - 1)
     monkeypatch.setattr(mpu, "get_expert_tensor_parallel_world_size", lambda: parallel_size if expert else 8)
     monkeypatch.setattr(mpu, "get_expert_tensor_parallel_rank", lambda: parallel_size - 1 if expert else 0)
     name = "decoder.layers.0.mlp." + ("experts.linear_fc1.weight0" if expert else "linear_fc1.weight")
     weight = torch.arange(16 * 8).reshape(16, 8)
-    # MindSpeed grouped column-parallel weights carry dim=1, but store [out, in].
     parameter = types.SimpleNamespace(
-        tensor_model_parallel=True, partition_dim=1 if platform == "npu" and expert else 0, partition_stride=1
+        tensor_model_parallel=True, partition_dim=reported_partition_dim, partition_stride=1
     )
     shard = shard_mcore_tensor(name, weight, parameter)
     gate, up = weight.chunk(2)

@@ -72,8 +72,7 @@ def update_module():
     torch_dist.gather_object = MagicMock()
 
     try:
-        with _unit_stubs.cuda_platform_selected():
-            yield importlib.import_module(MODULE_PATH)
+        yield importlib.import_module(MODULE_PATH)
     finally:
         _unit_stubs.restore_sys_modules(saved_modules)
         for name, value in saved_dist.items():

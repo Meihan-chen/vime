@@ -2,9 +2,8 @@
 
 Used only by the test and example launch utilities (`command_utils.execute_train`), not by
 vime core: a `Platform` describes one accelerator for the purpose of *launching a job* — how
-Ray advertises its devices, the device runtime env, whether torch_dist checkpoint conversion
-works, and how to construct the launch command. It adapts the core ``vime.platforms``
-selection to shell commands.
+Ray advertises its devices, the device runtime env, and how to construct the launch
+command. It adapts the selected accelerator to shell commands.
 
 Imports stay stdlib-only (torch imports are lazy) so the module is unit-testable in isolation;
 the actual `exec_command` calls live in `command_utils`.
@@ -16,7 +15,7 @@ import shlex
 from dataclasses import dataclass, field
 
 
-# ── Platform contract ──────────────────────────────────────────────────────
+# ── Launch contract ──────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -125,14 +124,14 @@ register(
 
 
 def current_platform() -> Platform:
-    """Adapt the selected core runtime platform to the launch contract."""
-    from vime.platforms import current_platform as current_runtime_platform
+    """Adapt the selected accelerator to the launch contract."""
+    from vime.utils import accelerator
 
-    selected = current_runtime_platform().name
+    selected = accelerator.device_type()
     try:
         return PLATFORMS[selected]
     except KeyError as exc:
-        raise ValueError(f"No launcher adapter is registered for platform {selected!r}") from exc
+        raise ValueError(f"No launcher entry for accelerator {selected!r}") from exc
 
 
 def launch_commands(
@@ -154,7 +153,7 @@ def launch_commands(
     """
     extra_env = extra_env or {}
     all_env = {**platform.env, **extra_env}
-    all_env["VIME_PLATFORM"] = platform.name
+    all_env["VIME_ACCELERATOR"] = platform.name
     cmds: list = []
     cmds.append(
         "pkill -9 -f '[v]llm serve|VLL[M]::'; sleep 3; "

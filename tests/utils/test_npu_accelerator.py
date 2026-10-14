@@ -5,20 +5,20 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vime.platforms import current_platform, get_platform, npu, reset_platform_cache
-from vime.utils.accelerator.npu import NPUAccelerator
 from vime.utils import accelerator
+from vime.utils.accelerator.npu import NPUAccelerator
+from vime_plugins.ascend import megatron_bootstrap
 
 
 @pytest.fixture(autouse=True)
 def npu_runtime(monkeypatch):
-    reset_platform_cache()
-    monkeypatch.setenv("VIME_PLATFORM", "npu")
     monkeypatch.delenv("VIME_ACCELERATOR", raising=False)
     monkeypatch.delenv("MUSA_VISIBLE_DEVICES", raising=False)
     monkeypatch.delenv("MUSA_PATCH_PATH", raising=False)
+    monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0")
     monkeypatch.setattr(accelerator, "_REGISTRY", {})
     monkeypatch.setattr(accelerator, "_ACCELERATOR", None)
+    monkeypatch.setattr(accelerator, "_NPU_BOOTSTRAP_CHECKED", True)
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: False)
     monkeypatch.setattr(accelerator, "is_musa_available", lambda: False)
     calls = []
@@ -33,13 +33,13 @@ def npu_runtime(monkeypatch):
     )
     monkeypatch.setattr(torch, "npu", fake_npu, raising=False)
     yield calls
-    reset_platform_cache()
 
 
-def test_platform_registers_npu_before_main_auto_selection(monkeypatch, npu_runtime):
+@pytest.mark.unit
+def test_npu_wins_auto_selection_over_an_available_cuda(monkeypatch, npu_runtime):
     # MindSpeed may also make CUDA's availability probe return true.
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: True)
-    assert current_platform().is_npu
+
     assert isinstance(accelerator.initialize_accelerator(), NPUAccelerator)
     assert accelerator.device_type() == "npu"
     assert accelerator.process_group_backend() == "hccl"
@@ -57,77 +57,120 @@ def test_platform_registers_npu_before_main_auto_selection(monkeypatch, npu_runt
     assert npu_runtime == [("set_device", 1), "synchronize", "ipc_collect", "empty_cache"]
 
 
+@pytest.mark.unit
 def test_npu_allocator_remains_owned_by_existing_runtime_hooks(monkeypatch):
     monkeypatch.setenv("VIME_ENABLE_EXPANDABLE_SEGMENTS", "1")
+
     assert NPUAccelerator().set_allocator_expandable_segments() is False
 
 
-def test_main_npu_override_selects_matching_platform(monkeypatch):
-    monkeypatch.delenv("VIME_PLATFORM")
-    monkeypatch.setenv("VIME_ACCELERATOR", "npu")
-    assert current_platform().is_npu
-    assert accelerator.get_accelerator().name == "npu"
+@pytest.mark.unit
+def test_npu_is_not_selected_without_a_visible_device(monkeypatch):
+    from vime.utils.accelerator import npu as npu_backend
+
+    monkeypatch.setattr(npu_backend.os.path, "exists", lambda path: False)
+    monkeypatch.setattr(npu_backend, "glob", lambda pattern: [])
+
+    assert npu_backend.has_visible_device() is False
+    assert npu_backend.is_npu_available() is False
 
 
-@pytest.mark.parametrize("platform,backend", [("npu", "cuda"), ("cuda", "npu"), ("npu", "musa")])
-def test_conflicting_overrides_fail_before_bootstrap(monkeypatch, platform, backend):
-    monkeypatch.setenv("VIME_PLATFORM", platform)
-    monkeypatch.setenv("VIME_ACCELERATOR", backend)
-    with pytest.raises(ValueError, match="Conflicting VIME_PLATFORM"):
-        current_platform()
-
-
+@pytest.mark.unit
 def test_explicit_cuda_request_wins_over_an_available_npu(monkeypatch):
-    # VIME_ACCELERATOR is the accelerator layer's own switch, and the platform
-    # resolver follows it, so the two stay consistent.
-    get_platform("npu")
-    monkeypatch.delenv("VIME_PLATFORM")
     monkeypatch.setenv("VIME_ACCELERATOR", "cuda")
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: True)
     monkeypatch.setattr(accelerator.CUDAAccelerator, "is_available", lambda self: True)
-    assert current_platform().name == "cuda"
+
     assert accelerator.initialize_accelerator().name == "cuda"
 
 
+@pytest.mark.unit
+def test_an_unknown_explicit_request_names_what_is_registered(monkeypatch):
+    monkeypatch.setenv("VIME_ACCELERATOR", "not-registered")
+
+    with pytest.raises(ValueError, match="Unknown accelerator"):
+        accelerator.get_accelerator()
+
+
+@pytest.mark.unit
+def test_safe_empty_cache_wraps_the_original_once(monkeypatch):
+    calls = []
+
+    def original_empty_cache():
+        calls.append("original")
+        raise RuntimeError("allocator is between offload states")
+
+    fake_torch = SimpleNamespace(
+        npu=SimpleNamespace(empty_cache=original_empty_cache),
+        cuda=SimpleNamespace(empty_cache=lambda: None),
+    )
+    monkeypatch.setattr(
+        megatron_bootstrap.importlib, "import_module", lambda name: fake_torch if name == "torch" else None
+    )
+
+    megatron_bootstrap._install_safe_empty_cache()
+    wrapped = fake_torch.npu.empty_cache
+    wrapped()
+    megatron_bootstrap._install_safe_empty_cache()
+
+    assert calls == ["original"]
+    assert fake_torch.npu.empty_cache is wrapped
+    assert fake_torch.cuda.empty_cache is wrapped
+
+
+@pytest.mark.unit
 def test_bootstrap_selects_npu_before_adaptor_and_attention(monkeypatch):
     events = []
-    bootstrap = current_platform().megatron
-    monkeypatch.setattr(npu, "_ensure_torch_npu", lambda: events.append("torch_npu"))
-    monkeypatch.setattr(npu, "_install_safe_empty_cache", lambda: events.append("empty_cache_guard"))
-    original_import = npu.importlib.import_module
+    monkeypatch.setitem(megatron_bootstrap.sys.modules, "torch_npu", SimpleNamespace())
+    monkeypatch.delitem(megatron_bootstrap.sys.modules, "megatron_adaptor", raising=False)
+    monkeypatch.setattr(megatron_bootstrap, "_install_safe_empty_cache", lambda: events.append("empty_cache_guard"))
+    original_import = megatron_bootstrap.importlib.import_module
 
     def import_module(name, *args, **kwargs):
         if name in {"megatron_adaptor", "vime.backends.megatron_utils.npu_attention_patch"}:
             assert accelerator.get_accelerator().name == "npu"
             events.append(name)
-            bootstrap.bootstrap()  # Recursive imports must not repeat initialization.
             return SimpleNamespace()
         return original_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(npu.importlib, "import_module", import_module)
-    bootstrap.bootstrap()
-    bootstrap.bootstrap()
+    monkeypatch.setattr(megatron_bootstrap.importlib, "import_module", import_module)
+
+    megatron_bootstrap.before_megatron_import()
+
     assert events == [
-        "torch_npu",
         "empty_cache_guard",
         "megatron_adaptor",
         "vime.backends.megatron_utils.npu_attention_patch",
     ]
 
 
+@pytest.mark.unit
+def test_bootstrap_is_skipped_once_the_patches_are_installed(monkeypatch):
+    monkeypatch.setitem(megatron_bootstrap.sys.modules, "megatron_adaptor", SimpleNamespace())
+
+    def fail(*args, **kwargs):
+        raise AssertionError("the vendor patches must not be installed twice")
+
+    monkeypatch.setattr(megatron_bootstrap.importlib, "import_module", fail)
+
+    megatron_bootstrap.before_megatron_import()
+
+
+@pytest.mark.unit
 def test_bootstrap_rejects_preselected_cuda_without_replacing_it(monkeypatch):
     selected = accelerator.CUDAAccelerator()
     monkeypatch.setattr(accelerator, "_ACCELERATOR", selected)
-    monkeypatch.setattr(npu, "_ensure_torch_npu", lambda: None)
-    bootstrap = current_platform().megatron
+    monkeypatch.setitem(megatron_bootstrap.sys.modules, "torch_npu", SimpleNamespace())
+    monkeypatch.delitem(megatron_bootstrap.sys.modules, "megatron_adaptor", raising=False)
+
     with pytest.raises(RuntimeError, match="already selected 'cuda'"):
-        bootstrap.bootstrap()
+        megatron_bootstrap.before_megatron_import()
+
     assert accelerator._ACCELERATOR is selected
-    assert not bootstrap._bootstrapping
-    assert not bootstrap._bootstrapped
 
 
-def test_repatch_passes_typed_args_and_restores_attention(monkeypatch):
+@pytest.mark.unit
+def test_reapplying_patches_passes_typed_args_and_restores_attention(monkeypatch):
     events = []
     full_args = SimpleNamespace(adaptor_default=True)
     typed_config = {"weight_nz_mode": 0}
@@ -158,16 +201,17 @@ def test_repatch_passes_typed_args_and_restores_attention(monkeypatch):
             npu_dot_product_attention_forward=vime_forward,
         ),
     }
-    bootstrap = current_platform().megatron
-    original_import = npu.importlib.import_module
+    original_import = megatron_bootstrap.importlib.import_module
 
     def import_module(name, *args, **kwargs):
         if name in modules:
             return modules[name]
         return original_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(npu.importlib, "import_module", import_module)
-    bootstrap.repatch(args)
+    monkeypatch.setattr(megatron_bootstrap.importlib, "import_module", import_module)
+
+    megatron_bootstrap.after_megatron_args(args)
+
     assert events == ["remove", ("pre", full_args), "features"]
     assert attention_class.forward is vime_forward
     assert args.vllm_additional_config is typed_config
