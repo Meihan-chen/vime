@@ -150,6 +150,31 @@ class Accelerator(abc.ABC):
     def weight_update_backend(self, default: str = "nccl") -> str:
         return self.communication_backend(default)
 
+    ray_resource_name = "GPU"
+    """The resource name Ray advertises this accelerator under."""
+
+    ray_uses_native_gpu_resource = True
+    """Whether that name is Ray's own GPU resource rather than a custom one."""
+
+    def weight_transfer_backend(self, transport: str) -> str:
+        """Map a transport name onto the engine that implements it here."""
+        return transport
+
+    def trainer_init_info(self, *, colocate: bool, **kwargs: Any) -> Any:
+        """Build the init info the mapped engine expects.
+
+        The engine is selected from ``TrainerInitInfo.backend``, a class
+        attribute, so choosing the type and choosing the transport name above
+        are two halves of one decision.
+        """
+        if colocate:
+            from vllm.distributed.weight_transfer.ipc_engine import IPCTrainerInitInfo
+
+            return IPCTrainerInitInfo(**kwargs)
+        from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerInitInfo
+
+        return NCCLTrainerInitInfo(**kwargs)
+
     @property
     def visible_devices_env(self) -> str:
         return "CUDA_VISIBLE_DEVICES"

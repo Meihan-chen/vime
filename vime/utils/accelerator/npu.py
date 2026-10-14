@@ -41,6 +41,11 @@ class NPUAccelerator(TorchAccelerator):
     device_type = "npu"
     communication_backend_name = "hccl"
 
+    # Ray resolves the visible-devices variable from the resource name, and only
+    # its own NPU resource maps to ASCEND_RT_VISIBLE_DEVICES.
+    ray_resource_name = "NPU"
+    ray_uses_native_gpu_resource = False
+
     @property
     def visible_devices_env(self) -> str:
         return "ASCEND_RT_VISIBLE_DEVICES"
@@ -71,6 +76,23 @@ class NPUAccelerator(TorchAccelerator):
     def set_allocator_expandable_segments(self) -> bool:
         # Allocator policy is carried by the TMS and runtime-env hooks instead.
         return False
+
+    def weight_transfer_backend(self, transport: str) -> str:
+        return {"ipc": "npu_ipc", "nccl": "hccl"}.get(transport, transport)
+
+    def trainer_init_info(self, *, colocate: bool, **kwargs: Any) -> Any:
+        import torch_npu  # noqa: F401
+        from vllm.plugins import load_general_plugins
+
+        # A trainer, unlike a vLLM worker, has not loaded the general plugins.
+        load_general_plugins()
+        if colocate:
+            from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import NPUIPCTrainerInitInfo
+
+            return NPUIPCTrainerInitInfo(**kwargs)
+        from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLTrainerInitInfo
+
+        return HCCLTrainerInitInfo(**kwargs)
 
     def device_uuid(self, index: int | str | None = None) -> str:
         # The host-IP/physical-chip identifier vLLM Ascend derives, so a trainer

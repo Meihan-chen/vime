@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from vime.utils.offload import cuda_offload_env_vars
+from vime.utils.device_env import cuda_offload_env_vars
 
 
 @pytest.mark.unit
@@ -73,24 +73,23 @@ def test_ascend_policy_refuses_to_suspend_an_allocated_region():
 
 
 @pytest.mark.unit
-def test_default_policy_runtime_env_carries_the_cuda_preload(tmp_path, monkeypatch):
+def test_default_train_actor_env_carries_the_cuda_preload(monkeypatch):
     import types
 
-    from vime.utils import offload
+    from vime.utils import device_env
 
-    (tmp_path / "torch_memory_saver_hook_mode_preload.abi3.so").write_bytes(b"")
-    monkeypatch.setattr(offload, "cuda_offload_env_vars", lambda env: {**env, "LD_PRELOAD": "stub"})
+    monkeypatch.setattr(device_env, "cuda_offload_env_vars", lambda env: {**env, "LD_PRELOAD": "stub"})
     args = types.SimpleNamespace(offload_train=True, train_backend="megatron")
 
-    assert offload.OffloadPolicy().runtime_env(args, {"A": "1"}) == {"A": "1", "LD_PRELOAD": "stub"}
+    assert device_env.DeviceEnv().train_actor_env(args, {"A": "1"}) == {"A": "1", "LD_PRELOAD": "stub"}
 
 
 @pytest.mark.unit
-def test_default_policy_leaves_the_env_alone_without_offload():
+def test_default_train_actor_env_leaves_the_env_alone_without_offload():
     import types
 
-    from vime.utils.offload import OffloadPolicy
+    from vime.utils.device_env import DeviceEnv
 
     args = types.SimpleNamespace(offload_train=False, train_backend="megatron")
 
-    assert OffloadPolicy().runtime_env(args, {"A": "1"}) == {"A": "1"}
+    assert DeviceEnv().train_actor_env(args, {"A": "1"}) == {"A": "1"}

@@ -9,14 +9,9 @@ import pytest
 
 
 
-def _ray_resource_for(accelerator_name):
-    from vime.ray.resources import RayAcceleratorResource
-
-    if accelerator_name == "cuda":
-        return RayAcceleratorResource()
-    from vime_plugins.ascend.ray import NPU_RESOURCE
-
-    return NPU_RESOURCE
+def _pin_ray_resource(monkeypatch, module, *, resource_name, native):
+    monkeypatch.setattr(module.resources.accelerator, "ray_resource_name", lambda: resource_name)
+    monkeypatch.setattr(module.resources.accelerator, "ray_uses_native_gpu_resource", lambda: native)
 
 
 @pytest.mark.parametrize(
@@ -35,7 +30,7 @@ def test_platform_ray_accelerator_ids_and_local_mapping(
 ):
     import ray
 
-    platform = SimpleNamespace(ray=_ray_resource_for(platform_name))
+    platform = SimpleNamespace(ray=SimpleNamespace(resource_name=expected_resource))
     monkeypatch.setenv(visible_env, f"unused,{assigned_id}")
     if platform_name == "cuda":
         monkeypatch.setattr(ray, "get_gpu_ids", lambda: [assigned_id])
@@ -64,7 +59,10 @@ def test_placement_group_uses_platform_ray_resource_contract(monkeypatch):
         actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
         accelerator_ids=lambda: ["unused"],
     )
-    monkeypatch.setattr(placement_group_module, "current_ray_resource", lambda: ray_ops)
+    monkeypatch.setattr(placement_group_module.resources, "resource_name", lambda: "ACCEL")
+    monkeypatch.setattr(placement_group_module.resources, "bundle", ray_ops.bundle)
+    monkeypatch.setattr(placement_group_module.resources, "actor_options", ray_ops.actor_options)
+    monkeypatch.setattr(placement_group_module.resources, "accelerator_ids", lambda: ["unused"])
 
     created = {}
 
@@ -130,11 +128,11 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
         actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
     )
     offload_policy = SimpleNamespace(
-        runtime_env=lambda args, env: runtime_env_inputs.append((args, dict(env)))
+        train_actor_env=lambda args, env: runtime_env_inputs.append((args, dict(env)))
         or {**env, "PLATFORM_ENV": "1"},
     )
-    monkeypatch.setattr(actor_group_module, "current_ray_resource", lambda: ray_ops)
-    monkeypatch.setattr(actor_group_module, "current_offload_policy", lambda: offload_policy)
+    monkeypatch.setattr(actor_group_module.resources, "actor_options", ray_ops.actor_options)
+    monkeypatch.setattr(actor_group_module, "current_device_env", lambda: offload_policy)
 
     actor_module = types.ModuleType("vime.backends.megatron_utils.actor")
     actor_module.MegatronTrainRayActor = object
@@ -200,14 +198,14 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
         ),
     )
     transfer = SimpleNamespace(
-        engine_runtime_env=lambda args, env: (
+        engine_actor_env=lambda args, env: (
             runtime_env_inputs.append((args, dict(env))) or {**env, "PLATFORM_ENV": "rollout"}
         )
         if is_npu
         else dict(env),
     )
-    monkeypatch.setattr(rollout_module, "current_ray_resource", lambda: ray_ops)
-    monkeypatch.setattr(rollout_module, "current_weight_transfer", lambda: transfer)
+    monkeypatch.setattr(rollout_module.resources, "actor_options", ray_ops.actor_options)
+    monkeypatch.setattr(rollout_module, "current_device_env", lambda: transfer)
 
     actor_options = []
 
@@ -283,7 +281,7 @@ def test_train_actor_maps_the_assigned_device_to_a_local_id(
 
     accelerator_ids = Mock(return_value=[assigned_id])
     monkeypatch.setattr(
-        train_actor_module, "current_ray_resource", lambda: SimpleNamespace(accelerator_ids=accelerator_ids)
+        train_actor_module.resources, "accelerator_ids", accelerator_ids
     )
     monkeypatch.setenv(visible_env, visible)
     monkeypatch.setattr(

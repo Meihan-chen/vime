@@ -13,21 +13,16 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from vime.backends.weight_transfer_registry import WeightTransfer
-from vime.ray.resources import RayAcceleratorResource
+from vime.utils.accelerator.base import Accelerator
+from vime.utils.accelerator.npu import NPUAccelerator
+from vime.utils.device_env import DeviceEnv
 from vime.utils.offload import OffloadPolicy
 
 
-def _npu_ray_resource():
-    from vime_plugins.ascend.ray import NPU_RESOURCE
+def _npu_device_env():
+    from vime_plugins.ascend.device_env import NpuDeviceEnv
 
-    return NPU_RESOURCE
-
-
-def _npu_weight_transfer():
-    from vime_plugins.ascend.weight_transfer import NpuWeightTransfer
-
-    return NpuWeightTransfer()
+    return NpuDeviceEnv()
 
 
 def _npu_offload_policy():
@@ -40,55 +35,50 @@ def _npu_offload_policy():
 
 
 @pytest.mark.parametrize(
-    ("resource", "bundle", "actor_options"),
+    ("accelerator_cls", "resource_name", "native"),
+    [(Accelerator, "GPU", True), (NPUAccelerator, "NPU", False)],
+)
+@pytest.mark.unit
+def test_ray_resource_name_comes_from_the_accelerator(accelerator_cls, resource_name, native):
+    # Ray resolves the visible-devices variable from the resource name, so the
+    # name and that flag have to travel with the device.
+    assert accelerator_cls.ray_resource_name == resource_name
+    assert accelerator_cls.ray_uses_native_gpu_resource is native
+
+
+@pytest.mark.parametrize(
+    ("resource_name", "native", "bundle", "actor_options"),
     [
-        (RayAcceleratorResource(), {"GPU": 2, "CPU": 3}, {"num_gpus": 0.4}),
-        (_npu_ray_resource, {"NPU": 2, "CPU": 3}, {"num_gpus": 0, "resources": {"NPU": 0.4}}),
+        ("GPU", True, {"GPU": 2, "CPU": 3}, {"num_gpus": 0.4}),
+        ("NPU", False, {"NPU": 2, "CPU": 3}, {"num_gpus": 0, "resources": {"NPU": 0.4}}),
     ],
 )
 @pytest.mark.unit
-def test_ray_resource_shapes(resource, bundle, actor_options):
-    resource = resource() if callable(resource) else resource
-
-    assert resource.bundle(device_count=2, cpu_count=3) == bundle
-    assert resource.actor_options(0.4) == actor_options
-
-
-@pytest.mark.unit
-def test_an_unregistered_accelerator_falls_back_to_ray_gpus(monkeypatch):
+def test_ray_request_shapes(monkeypatch, resource_name, native, bundle, actor_options):
     from vime.ray import resources
 
-    monkeypatch.setattr(resources.accelerator, "device_type", lambda: "something-else")
+    monkeypatch.setattr(resources.accelerator, "ray_resource_name", lambda: resource_name)
+    monkeypatch.setattr(resources.accelerator, "ray_uses_native_gpu_resource", lambda: native)
 
-    assert resources.current() is resources._DEFAULT
-    assert resources.current().native_gpu_resource is True
-
-
-@pytest.mark.unit
-def test_a_registered_accelerator_is_resolved_by_name(monkeypatch):
-    from vime.ray import resources
-
-    monkeypatch.setitem(resources._REGISTRY, "npu", _npu_ray_resource())
-    monkeypatch.setattr(resources.accelerator, "device_type", lambda: "npu")
-
-    assert resources.current().resource_name == "NPU"
+    assert resources.bundle(device_count=2, cpu_count=3) == bundle
+    assert resources.actor_options(0.4) == actor_options
 
 
 # ── Weight transfer and serving launch ──────────────────────────────────────
 
 
 @pytest.mark.parametrize(
-    ("transfer", "nccl_name", "ipc_name"),
-    [(WeightTransfer(), "nccl", "ipc"), (_npu_weight_transfer, "hccl", "npu_ipc")],
+    ("accelerator_cls", "nccl_name", "ipc_name"),
+    [(Accelerator, "nccl", "ipc"), (NPUAccelerator, "hccl", "npu_ipc")],
 )
 @pytest.mark.unit
-def test_transport_names_map_to_engines(transfer, nccl_name, ipc_name):
-    transfer = transfer() if callable(transfer) else transfer
+def test_transport_names_map_to_engines(accelerator_cls, nccl_name, ipc_name):
+    backend = accelerator_cls.weight_transfer_backend
 
-    assert transfer.backend("nccl") == nccl_name
-    assert transfer.backend("ipc") == ipc_name
+    assert backend(None, "nccl") == nccl_name
+    assert backend(None, "ipc") == ipc_name
     for passthrough in ("npu_ipc", "hccl", "custom"):
-        assert transfer.backend(passthrough) == passthrough
+        assert backend(None, passthrough) == passthrough
 
 
 @pytest.mark.parametrize(
@@ -114,8 +104,8 @@ def test_trainer_init_info_matches_the_selected_engine(monkeypatch, accelerator_
         monkeypatch.setitem(sys.modules, "vllm.plugins", plugins)
         monkeypatch.setitem(sys.modules, "torch_npu", ModuleType("torch_npu"))
 
-        transfer = WeightTransfer() if accelerator_name == "cuda" else _npu_weight_transfer()
-        info = transfer.trainer_init_info(colocate=colocate, rank=3, packed=True)
+        accelerator_cls = Accelerator if accelerator_name == "cuda" else NPUAccelerator
+        info = accelerator_cls.trainer_init_info(None, colocate=colocate, rank=3, packed=True)
 
         assert isinstance(info, info_cls)
         assert info.backend == backend
@@ -129,12 +119,12 @@ def test_trainer_init_info_matches_the_selected_engine(monkeypatch, accelerator_
 def test_default_subprocess_env_is_left_alone():
     base = {"KEEP": "1", "CUDA_VISIBLE_DEVICES": "0,1"}
 
-    assert WeightTransfer().subprocess_env(base, visible_devices="4,5", colocate=True) == base
+    assert DeviceEnv().serving_subprocess_env(base, visible_devices="4,5", colocate=True) == base
 
 
 @pytest.mark.unit
 def test_npu_subprocess_env_replaces_cuda_and_rocm_visibility():
-    env = _npu_weight_transfer().subprocess_env(
+    env = _npu_device_env().serving_subprocess_env(
         {
             "KEEP": "1",
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
@@ -154,13 +144,13 @@ def test_npu_subprocess_env_replaces_cuda_and_rocm_visibility():
 
 
 @pytest.mark.unit
-def test_npu_engine_runtime_env_carries_the_vendor_settings(monkeypatch, tmp_path):
+def test_npu_engine_actor_env_carries_the_vendor_settings(monkeypatch, tmp_path):
     toolkit = tmp_path / "toolkit"
     (toolkit / "python" / "site-packages" / "acl").mkdir(parents=True)
     monkeypatch.setenv("ASCEND_TOOLKIT_HOME", str(toolkit))
     args = Namespace(colocate=True)
 
-    env = _npu_weight_transfer().engine_runtime_env(args, {"BASE": "1"})
+    env = _npu_device_env().engine_actor_env(args, {"BASE": "1"})
 
     assert env["BASE"] == "1"
     assert env["VLLM_USE_AOT_COMPILE"] == "0"
@@ -169,21 +159,21 @@ def test_npu_engine_runtime_env_carries_the_vendor_settings(monkeypatch, tmp_pat
 
 
 @pytest.mark.unit
-def test_default_engine_runtime_env_is_the_identity():
-    assert WeightTransfer().engine_runtime_env(Namespace(colocate=True), {"BASE": "1"}) == {"BASE": "1"}
+def test_default_engine_actor_env_is_the_identity():
+    assert DeviceEnv().engine_actor_env(Namespace(colocate=True), {"BASE": "1"}) == {"BASE": "1"}
 
 
 # ── Offload ─────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.unit
-def test_npu_offload_runtime_env_carries_the_region_settings(monkeypatch, tmp_path):
+def test_npu_train_actor_env_carries_the_region_settings(monkeypatch, tmp_path):
     toolkit = tmp_path / "toolkit"
     (toolkit / "python" / "site-packages" / "acl").mkdir(parents=True)
     monkeypatch.setenv("ASCEND_TOOLKIT_HOME", str(toolkit))
     args = Namespace(offload_train=True, train_backend="megatron", colocate=True)
 
-    env = _npu_offload_policy().runtime_env(args, {"BASE": "1"})
+    env = _npu_device_env().train_actor_env(args, {"BASE": "1"})
 
     assert env["BASE"] == "1"
     assert env["TMS_HOOK_MODE"] == "torch"
@@ -193,12 +183,12 @@ def test_npu_offload_runtime_env_carries_the_region_settings(monkeypatch, tmp_pa
     assert str(toolkit / "python" / "site-packages") in env["PYTHONPATH"]
 
 
-@pytest.mark.parametrize("policy", [OffloadPolicy, _npu_offload_policy])
+@pytest.mark.parametrize("device_env", [DeviceEnv, _npu_device_env])
 @pytest.mark.unit
-def test_offload_runtime_env_is_untouched_without_offload(policy):
+def test_train_actor_env_is_untouched_without_offload(device_env):
     args = Namespace(offload_train=False, train_backend="megatron", colocate=True)
 
-    assert policy().runtime_env(args, {"BASE": "1"}) == {"BASE": "1"}
+    assert device_env().train_actor_env(args, {"BASE": "1"}) == {"BASE": "1"}
 
 
 @pytest.mark.parametrize("chained", [False, True])

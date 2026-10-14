@@ -489,6 +489,22 @@ def weight_update_backend(default: str = "nccl") -> str:
     return _backend().weight_update_backend(default)
 
 
+def weight_transfer_backend(transport: str) -> str:
+    return _backend().weight_transfer_backend(transport)
+
+
+def trainer_init_info(*, colocate: bool, **kwargs: Any) -> Any:
+    return _backend().trainer_init_info(colocate=colocate, **kwargs)
+
+
+def ray_resource_name() -> str:
+    return _backend().ray_resource_name
+
+
+def ray_uses_native_gpu_resource() -> bool:
+    return _backend().ray_uses_native_gpu_resource
+
+
 def visible_devices_env_key() -> str:
     return _backend().visible_devices_env
 

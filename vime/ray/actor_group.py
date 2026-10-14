@@ -7,9 +7,9 @@ import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from vime.ray.resources import current as current_ray_resource
+from vime.ray import resources
 from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, add_default_ray_env_vars
-from vime.utils.offload import current as current_offload_policy
+from vime.utils.device_env import current as current_device_env
 
 
 class RayTrainGroup:
@@ -72,7 +72,7 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
-        env_vars = current_offload_policy().runtime_env(self.args, env_vars)
+        env_vars = current_device_env().train_actor_env(self.args, env_vars)
 
         # We cannot do routing replay for critic.
         if self.args.use_routing_replay and self.role == "actor":
@@ -103,7 +103,7 @@ class RayTrainGroup:
                     placement_group=pg,
                     placement_group_bundle_index=reordered_bundle_indices[rank],
                 ),
-                **current_ray_resource().actor_options(num_gpus_per_actor),
+                **resources.actor_options(num_gpus_per_actor),
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())

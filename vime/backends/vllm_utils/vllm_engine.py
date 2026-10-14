@@ -14,7 +14,8 @@ from urllib3.exceptions import NewConnectionError
 from vllm.utils.system_utils import kill_process_tree
 
 from vime.backends.vllm_utils.external import get_server_info
-from vime.backends.weight_transfer_registry import current as current_weight_transfer
+from vime.utils import accelerator
+from vime.utils.device_env import current as current_device_env
 from vime.ray.ray_actor import RayActor
 from vime.utils.http_utils import _wrap_ipv6, get_host_info
 
@@ -69,7 +70,7 @@ def _build_subprocess_env(server_args_dict: dict[str, Any]) -> dict[str, str]:
     env["CUDA_VISIBLE_DEVICES"] = server_args_dict["_visible_devices"]
     # ROCm: keep HIP visibility in sync with CUDA (no-op on CUDA).
     env["HIP_VISIBLE_DEVICES"] = server_args_dict["_visible_devices"]
-    env = current_weight_transfer().subprocess_env(
+    env = current_device_env().serving_subprocess_env(
         env,
         visible_devices=server_args_dict["_visible_devices"],
         colocate=getattr(args, "colocate", False),
@@ -709,7 +710,7 @@ def _compute_server_args(
         kwargs["weight_transfer_config"] = {"backend": "ipc"}
     else:
         kwargs["weight_transfer_config"] = {"backend": "nccl"}
-    kwargs["weight_transfer_config"]["backend"] = current_weight_transfer().backend(
+    kwargs["weight_transfer_config"]["backend"] = accelerator.weight_transfer_backend(
         kwargs["weight_transfer_config"]["backend"]
     )
 

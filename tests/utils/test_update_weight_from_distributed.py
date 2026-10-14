@@ -15,9 +15,15 @@ if str(_tests_root) not in sys.path:
 
 import _unit_stubs
 import pytest
+
+from vime.utils.accelerator.base import Accelerator
+
+
+def _cuda_trainer_init_info(*, colocate, **kwargs):
+    """The default (CUDA) init info, independent of the selected accelerator."""
+    return Accelerator.trainer_init_info(None, colocate=colocate, **kwargs)
 import torch
 
-from vime.backends import weight_transfer_registry
 from vime.utils.types import ParamInfo
 
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_distributed"
@@ -189,9 +195,7 @@ def test_weight_source_switches_to_draft_weights(update_module, monkeypatch):
 @pytest.mark.unit
 def test_nccl_trainer_uses_single_packed_buffer(update_module, monkeypatch):
     adapter = sys.modules[update_module.create_nccl_trainer.__module__]
-    monkeypatch.setattr(
-        adapter, "current_weight_transfer", lambda: weight_transfer_registry.WeightTransfer()
-    )
+    monkeypatch.setattr(adapter.accelerator, "trainer_init_info", _cuda_trainer_init_info)
     created = []
 
     class NCCLTrainerInitInfo:
