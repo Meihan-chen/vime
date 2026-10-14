@@ -399,6 +399,10 @@ def attach_oom_observer(callback) -> bool:
     return _backend().attach_oom_observer(callback)
 
 
+def device_uuid(index: int | str | None = None) -> str:
+    return _backend().device_uuid(index)
+
+
 def supports(capability: str) -> bool:
     return _backend().supports(capability)
 

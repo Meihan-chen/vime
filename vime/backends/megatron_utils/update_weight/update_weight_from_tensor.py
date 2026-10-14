@@ -26,16 +26,6 @@ from .hf_weight_iterator_direct import HfWeightIteratorDirect
 from .update_weight_from_distributed import post_process_weights
 
 
-def _current_gpu_uuid() -> str:
-    platform = current_platform()
-    if platform.is_npu:
-        return platform.weight_transfer.current_device_uuid()
-
-    device_index = torch.cuda.current_device()
-    props = torch.cuda.get_device_properties(device_index)
-    return str(props.uuid)
-
-
 def _native_ipc_buffer_size(args: Namespace, param_info_buckets: Sequence[Sequence[ParamInfo]] | None) -> int:
     buffer_size = args.update_weight_buffer_size
     if not param_info_buckets:
@@ -75,7 +65,7 @@ def _build_packed_ipc_update_info(
     )
     assert chunk is not None
     _, ipc_args = reduce_tensor(chunk.packed_tensor)
-    gpu_uuid = _current_gpu_uuid()
+    gpu_uuid = accelerator.device_uuid()
     return (
         {
             "names": chunk.names,

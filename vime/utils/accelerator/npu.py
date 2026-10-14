@@ -72,6 +72,13 @@ class NPUAccelerator(TorchAccelerator):
         # Allocator policy is carried by the TMS and runtime-env hooks instead.
         return False
 
+    def device_uuid(self, index: int | str | None = None) -> str:
+        # The host-IP/physical-chip identifier vLLM Ascend derives, so a trainer
+        # and a receiver on the same host agree on the mapping.
+        from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import npu_generate_uuid
+
+        return npu_generate_uuid()
+
     def supports(self, capability: str) -> bool:
         if capability in {"cuda_int4_extension", "nvml_affinity", "vllm_fp8_utils", "triton_kernels"}:
             return False

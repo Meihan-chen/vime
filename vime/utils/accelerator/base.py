@@ -104,6 +104,10 @@ class Accelerator(abc.ABC):
         """Attach an OOM callback; return ``False`` when unsupported."""
         return False
 
+    def device_uuid(self, index: int | str | None = None) -> str:
+        """Return a stable identifier for one device, unique within the host."""
+        raise NotImplementedError(f"Accelerator {self.name!r} does not expose device UUIDs")
+
     def supports(self, capability: str) -> bool:
         """Return whether a named optional capability is implemented."""
         return False

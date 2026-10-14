@@ -127,13 +127,6 @@ class NpuRayResourceSpec(RayResourceSpec):
 
 
 class NpuWeightTransferPlatformOps(WeightTransferPlatformOps):
-    def current_device_uuid(self) -> str:
-        # Reuse vLLM Ascend's canonical host-IP/physical-chip identifier so
-        # trainer and receiver always use the exact same mapping.
-        from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import npu_generate_uuid
-
-        return npu_generate_uuid()
-
     def backend(self, backend: str) -> str:
         return {"ipc": "npu_ipc", "nccl": "hccl"}.get(backend, backend)
 

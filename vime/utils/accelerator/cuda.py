@@ -27,6 +27,9 @@ class CUDAAccelerator(TorchAccelerator):
         attach(callback)
         return True
 
+    def device_uuid(self, index: int | str | None = None) -> str:
+        return str(torch.cuda.get_device_properties(torch.cuda.current_device() if index is None else index).uuid)
+
     def supports(self, capability: str) -> bool:
         if capability == "nvml_affinity":
             return torch.version.hip is None
