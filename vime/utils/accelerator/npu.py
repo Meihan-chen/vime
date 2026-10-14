@@ -80,7 +80,14 @@ class NPUAccelerator(TorchAccelerator):
         return npu_generate_uuid()
 
     def supports(self, capability: str) -> bool:
-        if capability in {"cuda_int4_extension", "nvml_affinity", "vllm_fp8_utils", "triton_kernels"}:
+        if capability in {
+            "cuda_int4_extension",
+            "nvml_affinity",
+            # Checkpoints are loaded from HF directly rather than converted.
+            "torch_dist_checkpoint_convert",
+            "vllm_fp8_utils",
+            "triton_kernels",
+        }:
             return False
         if capability == "requires_cpu_initialization":
             return True

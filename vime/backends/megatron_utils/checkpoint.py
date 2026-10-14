@@ -8,7 +8,7 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
-from vime.platforms import current_platform
+from vime.utils import vendor_hooks
 
 try:
     # Here we patch out the `validate_non_overlapping_shards_metadata` in both functions
@@ -87,10 +87,12 @@ try:
 
     ShardedTensor._init_from_local_shards_and_global_metadata = _init_from_local_shards_and_global_metadata
 
-    current_platform().checkpoint.patch_default_planner(default_planner)
-
 except ImportError:
     pass
+else:
+    # Outside the try: an ImportError raised by a vendor here would be
+    # swallowed, leaving the patches above half applied.
+    vendor_hooks.run("after_dcp_planner_patch", default_planner)
 
 logger = logging.getLogger(__name__)
 

@@ -12,6 +12,7 @@ def register_all() -> None:
     from vime.ray import resources
     from vime.utils import offload, vendor_hooks
 
+    from .checkpoint_patch import relax_global_plan_validation
     from .megatron_bootstrap import after_megatron_args, before_megatron_import
     from .offload import NpuOffloadPolicy
     from .ray import NPU_RESOURCE
@@ -22,3 +23,4 @@ def register_all() -> None:
     offload.register("npu", NpuOffloadPolicy())
     vendor_hooks.register("before_megatron_import", before_megatron_import)
     vendor_hooks.register("after_megatron_args", after_megatron_args)
+    vendor_hooks.register("after_dcp_planner_patch", relax_global_plan_validation)

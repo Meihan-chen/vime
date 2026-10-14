@@ -24,7 +24,6 @@ class Platform:
     name: str
     ray_args: str  # ray-start resource flags, "{n}"-templated with the device count
     env: dict = field(default_factory=dict)  # device runtime env (into runtime_env + raylet)
-    torch_dist_convert: bool = True  # False -> use native HF loading without automatic conversion
 
     def ray_start_args(self, num_devices: int) -> str:
         return self.ray_args.format(n=num_devices)
@@ -104,7 +103,6 @@ register(
         # vime requests NPU bundles, not GPU (see ray/placement_group.py), so advertise
         # the custom NPU resource rather than Ray GPU capacity.
         ray_args="--num-gpus 0 --resources '{{\"NPU\": {n}}}'",
-        torch_dist_convert=False,  # Keep HF tests unchanged; torch_dist has a separate opt-in test.
         env={
             "PYTHONPATH": _npu_pythonpath(),
             "LD_LIBRARY_PATH": _npu_ld_library_path(),
