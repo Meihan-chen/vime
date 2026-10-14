@@ -9,7 +9,6 @@ import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 
-from vime.platforms import current_platform
 
 
 class SafetensorReader:
@@ -110,6 +109,18 @@ def _tensor_parallel_shard(
     return torch.cat(chunks[parallel_rank::parallel_size], dim=partition_dim).contiguous()
 
 
+def _normalized_partition_dim(name: str, partition_dim: int) -> int:
+    """Column-parallel fc1 weights are stored [out, in], so they shard on dim 0.
+
+    Some grouped-MoE implementations report dim 1 for them while laying them out
+    that way regardless. Transformer Engine reports 0, so this only corrects the
+    ones that disagree.
+    """
+    if partition_dim == 1 and ("linear_fc1.weight" in name or "linear_fc1.bias" in name):
+        return 0
+    return partition_dim
+
+
 def shard_mcore_tensor(name: str, tensor: torch.Tensor, parameter: torch.Tensor) -> torch.Tensor:
     from megatron.core import mpu
 
@@ -131,7 +142,7 @@ def shard_mcore_tensor(name: str, tensor: torch.Tensor, parameter: torch.Tensor)
         tensor,
         parallel_size=parallel_size,
         parallel_rank=parallel_rank,
-        partition_dim=current_platform().megatron.adjust_tp_partition_dim(name, parameter.partition_dim),
+        partition_dim=_normalized_partition_dim(name, parameter.partition_dim),
         partition_stride=parameter.partition_stride,
     )
 
