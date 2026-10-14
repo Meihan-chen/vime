@@ -170,13 +170,34 @@ def _npu_requested() -> bool:
     return "ASCEND_RT_VISIBLE_DEVICES" in os.environ or bool(os.environ.get("ASCEND_HOME_PATH"))
 
 
-def _load_npu_plugin() -> None:
-    try:
-        from vime_plugins.ascend import register_all
-    except ImportError:
-        logger.warning("Ascend support package is unavailable; NPU-specific behaviour is not registered")
+_DEFAULT_PLUGINS = {"npu": "vime_plugins.ascend"}
+
+
+def _plugin_module(accelerator_name: str) -> str | None:
+    """Which support package registers this accelerator's behaviour.
+
+    ``VIME_PLUGINS`` overrides the default: a module path to load instead, or
+    an empty value to register nothing. Setting it empty is how a process gets
+    the accelerator API without the vendor patches that come with the support
+    package.
+    """
+    configured = os.environ.get("VIME_PLUGINS")
+    if configured is None:
+        return _DEFAULT_PLUGINS.get(accelerator_name)
+    configured = configured.strip()
+    return configured or None
+
+
+def _load_plugin(accelerator_name: str) -> None:
+    module_path = _plugin_module(accelerator_name)
+    if module_path is None:
         return
-    register_all()
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError:
+        logger.warning("Support package %s is unavailable; its behaviour is not registered", module_path)
+        return
+    module.register_all()
 
 
 def _bootstrap_torch_npu_if_needed() -> bool:
@@ -187,7 +208,7 @@ def _bootstrap_torch_npu_if_needed() -> bool:
     _NPU_BOOTSTRAP_CHECKED = True
     imported = _try_import_torch_npu()
     if imported:
-        _load_npu_plugin()
+        _load_plugin("npu")
     return imported
 
 

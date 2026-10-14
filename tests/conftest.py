@@ -9,12 +9,12 @@ exercise it register what they need themselves.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    # Set before any test module is imported, since the load this suppresses
-    # happens at import time rather than inside a fixture.
-    from vime.utils import accelerator
-
-    accelerator._NPU_BOOTSTRAP_CHECKED = True
+    # An environment variable rather than process state, because several tests
+    # spawn workers that import the package again and need the same answer.
+    os.environ["VIME_PLUGINS"] = ""
