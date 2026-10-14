@@ -9,7 +9,13 @@ import torch
 NUM_GPUS = 0
 
 
-def _load_megatron_utils_init(monkeypatch, buffer_cls, tms_impl, module_name):
+def _load_megatron_utils_init(monkeypatch, buffer_cls, tms_impl, module_name, selected_accelerator=None):
+    from vime.utils import accelerator
+
+    # Pin what selection returns: whether this machine has an accelerator at
+    # all would otherwise decide which branch the patch takes.
+    monkeypatch.setattr(accelerator, "initialize_accelerator", lambda: selected_accelerator)
+
     deep_ep = types.ModuleType("deep_ep")
     deep_ep.Buffer = buffer_cls
     monkeypatch.setitem(sys.modules, "deep_ep", deep_ep)
@@ -31,7 +37,8 @@ def _load_megatron_utils_init(monkeypatch, buffer_cls, tms_impl, module_name):
 
 
 @pytest.mark.unit
-def test_deep_ep_init_restores_original_tms_region(monkeypatch):
+@pytest.mark.parametrize("with_accelerator", [False, True])
+def test_deep_ep_init_restores_original_tms_region(monkeypatch, with_accelerator):
     events = []
 
     class FakeCdll:
@@ -53,9 +60,21 @@ def test_deep_ep_init_restores_original_tms_region(monkeypatch):
             events.append(("init", cdll.interesting_region))
 
     tms_impl = types.SimpleNamespace(_binary_wrapper=types.SimpleNamespace(cdll=cdll))
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda: events.append(("sync", cdll.interesting_region)))
 
-    _load_megatron_utils_init(monkeypatch, FakeBuffer, tms_impl, "_test_megatron_utils_tms_restore")
+    def record_sync():
+        events.append(("sync", cdll.interesting_region))
+
+    # Either the selected accelerator synchronizes, or the CUDA hook does.
+    selected = types.SimpleNamespace(synchronize=record_sync) if with_accelerator else None
+    monkeypatch.setattr(torch.cuda, "synchronize", record_sync)
+
+    _load_megatron_utils_init(
+        monkeypatch,
+        FakeBuffer,
+        tms_impl,
+        f"_test_megatron_utils_tms_restore_{with_accelerator}",
+        selected_accelerator=selected,
+    )
     FakeBuffer()
 
     assert events == [
@@ -92,7 +111,9 @@ def test_deep_ep_init_restores_tms_region_after_failure(monkeypatch):
     tms_impl = types.SimpleNamespace(_binary_wrapper=types.SimpleNamespace(cdll=cdll))
     monkeypatch.setattr(torch.cuda, "synchronize", lambda: events.append(("sync", cdll.interesting_region)))
 
-    _load_megatron_utils_init(monkeypatch, FailingBuffer, tms_impl, "_test_megatron_utils_tms_failure")
+    _load_megatron_utils_init(
+        monkeypatch, FailingBuffer, tms_impl, "_test_megatron_utils_tms_failure", selected_accelerator=None
+    )
     with pytest.raises(RuntimeError, match="buffer init failed"):
         FailingBuffer()
 
