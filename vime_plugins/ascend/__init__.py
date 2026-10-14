@@ -10,9 +10,12 @@ from __future__ import annotations
 def register_all() -> None:
     from vime.backends import weight_transfer_registry
     from vime.ray import resources
+    from vime.utils import offload
 
+    from .offload import NpuOffloadPolicy
     from .ray import NPU_RESOURCE
     from .weight_transfer import NpuWeightTransfer
 
     resources.register("npu", NPU_RESOURCE)
     weight_transfer_registry.register("npu", NpuWeightTransfer())
+    offload.register("npu", NpuOffloadPolicy())

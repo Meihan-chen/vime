@@ -1,12 +1,22 @@
 """Accelerator memory-offload policy.
 
-Imports neither Ray nor an accelerator, so the offload environment can be
-constructed and asserted without a device or a live cluster.
+Offloading training state needs three things that differ by accelerator: the
+environment the actor is launched with, a region to allocate the model inside,
+and whether that region can be suspended once allocated. CUDA gets all three
+from torch_memory_saver's preload hook, which is the default here.
+
+The policy itself imports no accelerator, so it can be constructed and
+asserted without a device.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from contextlib import nullcontext
+from typing import Any
+
+from vime.utils import accelerator
 
 
 def cuda_offload_env_vars(env_vars: dict, library_dir: str | None = None) -> dict:
@@ -39,3 +49,36 @@ def cuda_offload_env_vars(env_vars: dict, library_dir: str | None = None) -> dic
     env_vars["TMS_INIT_ENABLE"] = "1"
     env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
     return env_vars
+
+
+class OffloadPolicy:
+    """Per-accelerator offload behaviour, defaulting to CUDA's."""
+
+    # Whether an allocated region can be suspended again.
+    supports_disable = True
+
+    def runtime_env(self, args: Any, env_vars: Mapping[str, str] | None = None) -> dict[str, str]:
+        env = dict(env_vars or {})
+        if not (getattr(args, "offload_train", False) and getattr(args, "train_backend", None) == "megatron"):
+            return env
+        return cuda_offload_env_vars(env)
+
+    def training_region(self, offload_train: bool):
+        """Context the model and optimizer are allocated inside."""
+        return nullcontext()
+
+    def initialize_optimizer_state(self, optimizer: Any) -> None:
+        """Materialize lazy optimizer state before leaving the region."""
+        return None
+
+
+_REGISTRY: dict[str, OffloadPolicy] = {}
+_DEFAULT = OffloadPolicy()
+
+
+def register(accelerator_name: str, policy: OffloadPolicy) -> None:
+    _REGISTRY[accelerator_name.lower()] = policy
+
+
+def current() -> OffloadPolicy:
+    return _REGISTRY.get(accelerator.device_type(), _DEFAULT)

@@ -7,10 +7,9 @@ import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from vime.platforms import current_platform
 from vime.ray.resources import current as current_ray_resource
 from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, add_default_ray_env_vars
-from vime.utils.offload import cuda_offload_env_vars
+from vime.utils.offload import current as current_offload_policy
 
 
 class RayTrainGroup:
@@ -73,12 +72,7 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
-        platform = current_platform()
-        if self.args.offload_train and self.args.train_backend == "megatron":
-            if platform.is_npu:
-                env_vars = platform.ray.train_runtime_env(self.args, env_vars)
-            else:
-                env_vars = cuda_offload_env_vars(env_vars)
+        env_vars = current_offload_policy().runtime_env(self.args, env_vars)
 
         # We cannot do routing replay for critic.
         if self.args.use_routing_replay and self.role == "actor":

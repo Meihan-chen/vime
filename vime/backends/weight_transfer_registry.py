@@ -9,13 +9,11 @@ CUDA behaviour.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any
 
 from vime.utils import accelerator
 
 
-@dataclass(frozen=True)
 class WeightTransfer:
     """Per-accelerator weight-transfer and serving-launch behaviour."""
 

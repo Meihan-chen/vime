@@ -17,6 +17,7 @@ from vime.observability.logging_utils import init_tracking
 from vime.observability.profile_utils import TrainProfiler
 from vime.observability.timer import Timer, inverse_timer, timer, with_defer
 from vime.platforms import current_platform
+from vime.utils.offload import current as current_offload_policy
 from vime.ray.train_actor import TrainRayActor
 from vime.utils import accelerator
 from vime.utils.data import process_rollout_data
@@ -93,12 +94,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
         dist.barrier(group=get_gloo_group())
 
-        with current_platform().megatron.training_context(args.offload_train):
+        with current_offload_policy().training_region(args.offload_train):
             self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
                 args, role
             )
             if args.offload_train:
-                current_platform().megatron.initialize_optimizer_state(self.optimizer)
+                current_offload_policy().initialize_optimizer_state(self.optimizer)
 
         vpp_size = mpu.get_virtual_pipeline_model_parallel_world_size() or 1
         if vpp_size > 1:
@@ -607,9 +608,10 @@ class MegatronTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
 
+        offload_policy = current_offload_policy()
         with (
             torch_memory_saver.disable()
-            if (self.args.offload_train and not current_platform().is_npu)
+            if (self.args.offload_train and offload_policy.supports_disable)
             else nullcontext()
         ):
             if self.args.dspark_enabled and self.args.offload_train:

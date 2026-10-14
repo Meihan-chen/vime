@@ -122,12 +122,14 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
 
     runtime_env_inputs = []
     ray_ops = SimpleNamespace(
-        train_runtime_env=lambda args, env: runtime_env_inputs.append((args, dict(env)))
-        or {**env, "PLATFORM_ENV": "1"},
         actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
     )
-    monkeypatch.setattr(actor_group_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=True))
+    offload_policy = SimpleNamespace(
+        runtime_env=lambda args, env: runtime_env_inputs.append((args, dict(env)))
+        or {**env, "PLATFORM_ENV": "1"},
+    )
     monkeypatch.setattr(actor_group_module, "current_ray_resource", lambda: ray_ops)
+    monkeypatch.setattr(actor_group_module, "current_offload_policy", lambda: offload_policy)
 
     actor_module = types.ModuleType("vime.backends.megatron_utils.actor")
     actor_module.MegatronTrainRayActor = object
