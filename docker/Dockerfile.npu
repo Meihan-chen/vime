@@ -2,6 +2,34 @@
 
 ARG BASE_IMAGE=quay.io/atlas-ci/vllm-ascend
 ARG BASE_IMAGE_TAG=v0.30.0-e00cb64-a3
+FROM rust:1.95-bookworm AS sunabako-wheel
+
+COPY docker/patch/latest/sunabako-arm64.patch /tmp/sunabako-arm64.patch
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv && \
+    python3 -m venv /opt/sdk-build && /opt/sdk-build/bin/python -m pip install "maturin>=1.8,<2" && \
+    curl -fsSL https://files.pythonhosted.org/packages/cd/16/d9fd84bbf784c19425d9d83d8d98deef6d5f107012e8d50bddeb5c11cf5c/sunabako-0.1.1.tar.gz -o /tmp/sdk.tar.gz && \
+    mkdir /sdk && tar -xf /tmp/sdk.tar.gz -C /sdk --strip-components=1 && cd /sdk && \
+    git apply --check /tmp/sunabako-arm64.patch && \
+    git apply /tmp/sunabako-arm64.patch && \
+    /opt/sdk-build/bin/maturin build --locked --release --target aarch64-unknown-linux-gnu --out /wheels
+
+FROM ${BASE_IMAGE}:${BASE_IMAGE_TAG} AS vllm-router-wheel
+
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo CARGO_BUILD_JOBS=4
+COPY --from=rust:1.95-bookworm /usr/local/rustup /usr/local/rustup
+COPY --from=rust:1.95-bookworm /usr/local/cargo/bin /usr/local/cargo/bin
+ENV PATH=/usr/local/cargo/bin:${PATH}
+ARG VLLM_ROUTER_COMMIT=1fbcde7443d75b36befb61bc081f64c2a1f13a4b
+# The router has native Rust code: build a wheel, not a source-only live patch.
+COPY docker/patch/latest/router-health-check.patch /tmp/router-health-check.patch
+RUN apt-get update && apt-get install -y --no-install-recommends git cmake pkg-config libssl-dev && \
+    python3 -m pip install setuptools-rust wheel && \
+    git init /router && cd /router && git remote add origin https://github.com/vllm-project/router.git && \
+    git fetch --depth 1 origin ${VLLM_ROUTER_COMMIT} && git checkout FETCH_HEAD && \
+    git apply --check /tmp/router-health-check.patch && \
+    git apply /tmp/router-health-check.patch && \
+    python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir /wheels .
+
 FROM ${BASE_IMAGE}:${BASE_IMAGE_TAG}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -107,11 +135,21 @@ RUN test -n "${VIME_COMMIT}" && \
     git -C /root/vime fetch --depth 1 origin "${VIME_COMMIT}" && \
     git -C /root/vime checkout --detach FETCH_HEAD
 
+# Install the arm64 wheel before resolving the required Sunabako dependency.
+COPY --from=sunabako-wheel /wheels/ /tmp/sunabako-wheels/
+RUN pip install --no-deps /tmp/sunabako-wheels/*.whl && \
+    rm -rf /tmp/sunabako-wheels
+
 # ring_flash_attn is a CUDA extension and is not used on Ascend.
 RUN pip install \
       --constraint /tmp/vime-npu-constraints.txt \
       --requirement /root/vime/requirements.txt && \
     pip install --no-deps --no-build-isolation -e /root/vime
+
+# Keep the shared health-check patch in both the Python API and Rust extension.
+COPY --from=vllm-router-wheel /wheels/ /tmp/router-wheels/
+RUN pip install --no-deps --force-reinstall /tmp/router-wheels/*.whl && \
+    rm -rf /tmp/router-wheels
 
 # Qwen3.5 GDN layers import fla.ShortConvolution at init. Do not use the npu
 # extra: it pins a different torch / torch_npu than this image.

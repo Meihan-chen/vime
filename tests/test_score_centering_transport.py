@@ -31,7 +31,9 @@ def test_score_centering_reads_native_tito_integer_token_ids():
         [{42: Logprob(-3.0, 3), 4: Logprob(-0.1, 1), 7: Logprob(-0.2, 2)}],
         num_output_top_logprobs=3,
     )
-    metadata, sampled = _score_centering_metadata({"logprobs": logprobs.model_dump()}, [42], top_p=1.0, top_k=2)
+    wire = {"logprobs": json.loads(logprobs.model_dump_json())}
+    assert wire["logprobs"]["content"][0]["token_id"] == 42
+    metadata, sampled = _score_centering_metadata(wire, [42], top_p=1.0, top_k=2)
     ids, probabilities = metadata["score_centering_topk"]
     np.testing.assert_array_equal(ids, [[4, 7]])
     np.testing.assert_allclose(probabilities, [[-0.1, -0.2]])
@@ -64,7 +66,13 @@ def test_tito_stream_preserves_empty_finish_reason(finish_reason, return_token_i
         chunks = [([], finish_reason)] if terminal_only else [([42], None), ([], finish_reason)]
         for token_ids, reason in chunks:
             completion = outputs.CompletionOutput(
-                index=0, text="", token_ids=token_ids, cumulative_logprob=None, logprobs=None, finish_reason=reason
+                index=0,
+                text="",
+                token_ids=token_ids,
+                cumulative_logprob=None,
+                logprobs=None,
+                finish_reason=reason,
+                sampling_mask=outputs.SamplingMask([[7, 42] for _ in token_ids], [[-1.2, -0.4] for _ in token_ids]),
             )
             yield outputs.RequestOutput("probe", None, [1, 2, 3], None, [completion], reason is not None)
 
@@ -80,6 +88,97 @@ def test_tito_stream_preserves_empty_finish_reason(finish_reason, return_token_i
     chunks = asyncio.run(collect())
     assert chunks[-1]["choices"][0]["finish_reason"] == finish_reason
     assert chunks[-1]["choices"][0]["token_ids"] == []
+    for chunk in chunks:
+        choice = chunk["choices"][0]
+        count = len(choice["token_ids"])
+        assert choice["sampling_mask"] == [[7, 42]] * count
+        assert choice["sampling_mask_logprobs"] == [[-1.2, -0.4]] * count
+
+
+@pytest.fixture
+def npu_sampling_mask_tensors():
+    from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
+
+    if hasattr(SamplingMaskTensors, "rows_per_request"):
+        pytest.skip("Packed-score layout targets the frozen single-position Ascend vendor bundle")
+    return SamplingMaskTensors
+
+
+@pytest.mark.parametrize("vocab_size", [13, 4101])
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("return_logprobs", [False, True])
+def test_npu_sampling_support_scores_follow_ids_through_cpu_decode(
+    npu_sampling_mask_tensors, vocab_size, packed, return_logprobs
+):
+    # Exercise both compact-ID and Ascend packed-mask layouts on CPU; no kernel
+    # is launched. The middle row represents chunked prefill with no output.
+    logits = torch.arange(3 * vocab_size, dtype=torch.float32).reshape(3, vocab_size) / vocab_size
+    logits[:, ::3] = -torch.inf
+    supports = [torch.where(torch.isfinite(row))[0].numpy() for row in logits]
+    supports[1] = np.empty(0, dtype=np.int64)
+    keep = np.zeros((3, vocab_size), dtype=np.uint8)
+    width = 0 if packed else vocab_size
+    ids = torch.zeros((3, width), dtype=torch.int32)
+    dense_scores = logits.log_softmax(dim=-1)
+    scores = dense_scores.clone() if packed else torch.zeros_like(dense_scores)
+    for row, support in enumerate(supports):
+        keep[row, support] = 1
+        if not packed:
+            ids[row, : len(support)] = torch.from_numpy(support)
+            scores[row, : len(support)] = dense_scores[row, support]
+    tensors = npu_sampling_mask_tensors(
+        ids,
+        torch.from_numpy(np.packbits(keep, axis=1, bitorder="little")),
+        torch.tensor([len(support) for support in supports], dtype=torch.int32),
+        vocab_size,
+        logprobs=scores if return_logprobs else None,
+    )
+    decoded = tensors.to_cpu_nonblocking().tolists()
+    for row, support in enumerate(supports):
+        selected = decoded.slice_request(row, 1)
+        assert selected.to_nested_list() == [support.tolist()]
+        if return_logprobs:
+            np.testing.assert_allclose(selected.to_nested_logprobs(), [dense_scores[row, support].tolist()])
+        else:
+            assert selected.logprobs is None
+
+
+def test_npu_sampling_support_empty_batch_preserves_score_layout(npu_sampling_mask_tensors):
+    tensors = npu_sampling_mask_tensors(
+        torch.empty((0, 0), dtype=torch.int32),
+        torch.empty((0, 2), dtype=torch.uint8),
+        torch.empty(0, dtype=torch.int32),
+        13,
+        logprobs=torch.empty((0, 13)),
+    )
+    decoded = tensors.tolists()
+    assert decoded.offsets.tolist() == [0]
+    assert decoded.to_nested_list() == []
+    assert decoded.to_nested_logprobs() == []
+
+
+@pytest.mark.parametrize("delta", [False, True])
+def test_sampling_masks_are_trimmed_and_drained_with_output_tokens(delta):
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestState
+    from vllm.v1.outputs import SamplingMaskLists
+
+    state = SimpleNamespace(
+        request_index=0,
+        output_kind=RequestOutputKind.DELTA if delta else RequestOutputKind.FINAL_ONLY,
+        detokenizer=SimpleNamespace(get_next_output_text=lambda *_: "", output_token_ids=[2, 3]),
+        logprobs_processor=SimpleNamespace(logprobs=None, cumulative_logprob=None),
+        sampling_mask_chunks=[SamplingMaskLists(np.array([token]), logprobs=np.array([0.0])) for token in (2, 3, 4)],
+        routed_experts_chunks=[],
+        spec_decode_metrics=None,
+    )
+    output = RequestState._new_completion_output(state, [2, 3], None if delta else "abort", None)
+    assert output.sampling_mask.token_ids == [[2], [3]]
+    assert output.sampling_mask.logprobs == [[0.0], [0.0]]
+    if delta:
+        assert state.sampling_mask_chunks == []
+        terminal = RequestState._new_completion_output(state, [], "abort", None)
+        assert terminal.sampling_mask is None
 
 
 @pytest.mark.parametrize("aggregate", [False, True])

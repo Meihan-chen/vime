@@ -9,6 +9,8 @@ This guide provides instructions for installing Vime with NPU support, including
 | Base image | `v0.30.0-e00cb64-a3` | `quay.io/atlas-ci/vllm-ascend` |
 | vLLM | `8cc9aa5ad350f6f80cf3bebb298d410803ff75a9` | [GitHub](https://github.com/vllm-project/vllm) |
 | vLLM-Ascend | `e00cb64a4469dfcd1ea8ba2d5d5e4eb2ab7bcaf1` | [GitHub](https://github.com/vllm-project/vllm-ascend) |
+| vLLM Router | `1fbcde7443d75b36befb61bc081f64c2a1f13a4b` + `docker/patch/latest/router-health-check.patch` | [GitHub](https://github.com/vllm-project/router) |
+| Sunabako | `0.1.1` + `docker/patch/latest/sunabako-arm64.patch` | [PyPI](https://pypi.org/project/sunabako/0.1.1/) |
 | FLA (serving, included in base image) | `flash-linear-attention-npu-a3==26.9.1+deva4a7958` | [v26.9.1-beta2](https://github.com/flashserve/flash-linear-attention-npu/releases/tag/v26.9.1-beta2) |
 | Megatron-LM | `1dcf0dafa884ad52ffb243625717a3471643e087` | [GitHub](https://github.com/NVIDIA/Megatron-LM) |
 | MegatronAdaptor | `15582addff3f3d4680e350826fa70d012b475509` | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor) |
@@ -102,6 +104,27 @@ pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MindSpeed"
 
 ### 5. Vime
 
+Build and install the Sunabako arm64 wheel before installing Vime requirements.
+Use Rust 1.95, a C build toolchain, `curl`, `git`, and `python3-venv`. The Dockerfile
+provides a separate wheel-build stage; for installation inside the base image:
+
+```bash
+export SUNABAKO_BUILD_ROOT="$(mktemp -d /tmp/vime-sunabako.XXXXXX)"
+python3 -m venv "${SUNABAKO_BUILD_ROOT}/venv"
+"${SUNABAKO_BUILD_ROOT}/venv/bin/python" -m pip install 'maturin>=1.8,<2'
+curl -fsSL https://files.pythonhosted.org/packages/cd/16/d9fd84bbf784c19425d9d83d8d98deef6d5f107012e8d50bddeb5c11cf5c/sunabako-0.1.1.tar.gz \
+  -o "${SUNABAKO_BUILD_ROOT}/sunabako.tar.gz"
+mkdir "${SUNABAKO_BUILD_ROOT}/src"
+tar -xf "${SUNABAKO_BUILD_ROOT}/sunabako.tar.gz" -C "${SUNABAKO_BUILD_ROOT}/src" --strip-components=1
+git -C "${SUNABAKO_BUILD_ROOT}/src" apply --check "${VIME_INSTALL_ROOT}/vime/docker/patch/latest/sunabako-arm64.patch"
+git -C "${SUNABAKO_BUILD_ROOT}/src" apply "${VIME_INSTALL_ROOT}/vime/docker/patch/latest/sunabako-arm64.patch"
+(cd "${SUNABAKO_BUILD_ROOT}/src" && "${SUNABAKO_BUILD_ROOT}/venv/bin/maturin" build \
+  --locked --release --target aarch64-unknown-linux-gnu --out "${SUNABAKO_BUILD_ROOT}/wheels")
+python3 -m pip install --no-deps "${SUNABAKO_BUILD_ROOT}"/wheels/*.whl
+```
+
+Then install Vime and the training FLA packages:
+
 ```bash
 pip install -r "${VIME_INSTALL_ROOT}/vime/requirements.txt"
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/vime"
@@ -123,6 +146,30 @@ python3 setup.py bdist_wheel
 python3 -m pip install --no-deps dist/torch_memory_saver-*.whl
 cd "${VIME_INSTALL_ROOT}/vime"
 ```
+
+### 7. vLLM Router
+
+Build the pinned router with the shared health-check patch so Vime can own worker
+health checks. This patch changes Rust as well as Python; applying only the Python
+changes is insufficient. Install Rust 1.95, `cmake`, `pkg-config`, and `libssl-dev`
+before building. The Dockerfile supplies these in a separate wheel-build stage.
+
+```bash
+git init "${VIME_INSTALL_ROOT}/vllm-router"
+git -C "${VIME_INSTALL_ROOT}/vllm-router" remote add origin https://github.com/vllm-project/router.git
+git -C "${VIME_INSTALL_ROOT}/vllm-router" fetch --depth 1 origin 1fbcde7443d75b36befb61bc081f64c2a1f13a4b
+git -C "${VIME_INSTALL_ROOT}/vllm-router" checkout --detach FETCH_HEAD
+git -C "${VIME_INSTALL_ROOT}/vllm-router" apply --check "${VIME_INSTALL_ROOT}/vime/docker/patch/latest/router-health-check.patch"
+git -C "${VIME_INSTALL_ROOT}/vllm-router" apply "${VIME_INSTALL_ROOT}/vime/docker/patch/latest/router-health-check.patch"
+pip install setuptools-rust wheel
+cd "${VIME_INSTALL_ROOT}/vllm-router"
+CARGO_BUILD_JOBS=4 python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+python3 -m pip install --no-deps --force-reinstall dist/vllm_router-*.whl
+cd "${VIME_INSTALL_ROOT}/vime"
+```
+
+Rebuild and reinstall the wheel when changing this patch; the source-only NPU
+patch reconciliation does not rebuild Rust extensions.
 
 ## Environment Setup and Installation Check
 

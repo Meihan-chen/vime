@@ -336,6 +336,60 @@ index bcfd117ec..ef8b151de 100644
      out = out[..., :seqlen]
  
      if return_final_states:
+diff --git a/vllm_ascend/ops/triton/v2/sample/sampling_mask.py b/vllm_ascend/ops/triton/v2/sample/sampling_mask.py
+index 75924c74f..122c41356 100644
+--- a/vllm_ascend/ops/triton/v2/sample/sampling_mask.py
++++ b/vllm_ascend/ops/triton/v2/sample/sampling_mask.py
+@@ -64,6 +64,7 @@ def sampling_mask_from_logits_npu(
+     logits: torch.Tensor,
+     num_sampled_tokens: torch.Tensor,
+     max_num_kept: int | None = None,
++    return_logprobs: bool = False,
+ ) -> SamplingMaskTensors:
+     """Pack sampling masks after making strided vocab loads NPU-friendly."""
+     if logits.stride(1) != 1:
+@@ -77,17 +78,18 @@ def sampling_mask_from_logits_npu(
+         device=logits.device,
+     )
+     counts = torch.empty(num_reqs, dtype=torch.int32, device=logits.device)
+-    _pack_sampling_mask_kernel_ascend[(num_reqs,)](
+-        logits,
+-        logits.stride(0),
+-        logits.stride(1),
+-        num_sampled_tokens,
+-        packed_mask,
+-        packed_mask.stride(0),
+-        counts,
+-        vocab_size,
+-        BLOCK_SIZE=_BLOCK_SIZE,
+-    )
++    if num_reqs:
++        _pack_sampling_mask_kernel_ascend[(num_reqs,)](
++            logits,
++            logits.stride(0),
++            logits.stride(1),
++            num_sampled_tokens,
++            packed_mask,
++            packed_mask.stride(0),
++            counts,
++            vocab_size,
++            BLOCK_SIZE=_BLOCK_SIZE,
++        )
+ 
+     if max_num_kept is not None:
+         # The four-field API normally returns compact token IDs in addition to
+@@ -106,6 +108,11 @@ def sampling_mask_from_logits_npu(
+             dtype=torch.int32,
+             device=logits.device,
+         )
++        # Keep scores in vocabulary order; the shared CPU decoder gathers them
++        # using the same packed-mask IDs. No NPU dynamic compaction is needed.
++        if return_logprobs:
++            logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float32)
++            return cls(token_ids, packed_mask, counts, vocab_size, logprobs)
+         return cls(token_ids, packed_mask, counts, vocab_size)
+ 
+     return cls(packed_mask, counts, vocab_size)
 diff --git a/vllm_ascend/patch/platform/patch_pp_mtp.py b/vllm_ascend/patch/platform/patch_pp_mtp.py
 index 6a3d98226..7ed6cecd9 100644
 --- a/vllm_ascend/patch/platform/patch_pp_mtp.py
