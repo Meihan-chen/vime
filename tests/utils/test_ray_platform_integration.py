@@ -40,7 +40,14 @@ def test_platform_ray_accelerator_ids_and_local_mapping(
 
     assert platform.ray.resource_name == expected_resource
     assert platform.ray.accelerator_ids() == [assigned_id]
-    assert platform.ray.local_device_id() == 1
+
+
+def _accelerator_backend(accelerator_module, platform_name):
+    if platform_name == "cuda":
+        return accelerator_module.CUDAAccelerator()
+    from vime.platforms.npu import NPUAccelerator
+
+    return NPUAccelerator()
 
 
 def test_placement_group_uses_platform_ray_resource_contract(monkeypatch):
@@ -248,32 +255,32 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
         group.start_engines()
 
 
-def test_train_actor_uses_npu_local_device_mapping(monkeypatch):
+@pytest.mark.parametrize(
+    "platform_name,visible_env,visible,assigned_id,expected_local_id",
+    [
+        ("cuda", "CUDA_VISIBLE_DEVICES", "7,3", "3", 1),
+        ("npu", "ASCEND_RT_VISIBLE_DEVICES", "4,9,2", "9", 1),
+    ],
+)
+def test_train_actor_maps_the_assigned_device_to_a_local_id(
+    monkeypatch, platform_name, visible_env, visible, assigned_id, expected_local_id
+):
     from vime.ray import train_actor as train_actor_module
 
-    local_device_id = Mock(return_value=5)
+    accelerator_ids = Mock(return_value=[assigned_id])
     monkeypatch.setattr(
         train_actor_module,
         "current_platform",
-        lambda: _fake_platform(SimpleNamespace(local_device_id=local_device_id), is_npu=True),
+        lambda: _fake_platform(
+            SimpleNamespace(accelerator_ids=accelerator_ids), is_npu=platform_name == "npu"
+        ),
     )
-
-    assert train_actor_module.get_local_gpu_id() == 5
-    local_device_id.assert_called_once_with()
-
-
-def test_train_actor_keeps_main_cuda_local_device_mapping(monkeypatch):
-    from vime.ray import train_actor as train_actor_module
-
+    monkeypatch.setenv(visible_env, visible)
     monkeypatch.setattr(
-        train_actor_module,
-        "current_platform",
-        lambda: _fake_platform(SimpleNamespace(), is_npu=False),
+        train_actor_module.accelerator,
+        "_ACCELERATOR",
+        _accelerator_backend(train_actor_module.accelerator, platform_name),
     )
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7,3")
-    monkeypatch.setattr(
-        train_actor_module.accelerator, "_ACCELERATOR", train_actor_module.accelerator.CUDAAccelerator()
-    )
-    monkeypatch.setattr(train_actor_module.ray, "get_gpu_ids", lambda: ["3"])
 
-    assert train_actor_module.get_local_gpu_id() == 1
+    assert train_actor_module.get_local_gpu_id() == expected_local_id
+    accelerator_ids.assert_called_once_with()

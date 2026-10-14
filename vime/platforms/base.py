@@ -35,28 +35,6 @@ class RayResourceSpec:
             ids = ray.get_runtime_context().get_accelerator_ids().get(self.resource_name, [])
         return [str(device_id) for device_id in ids]
 
-    def local_device_id(self) -> int | str:
-        device_ids = self.accelerator_ids()
-        if not device_ids:
-            raise RuntimeError(f"No {self.resource_name} accelerator IDs are assigned to this Ray actor")
-
-        assigned_id = device_ids[0]
-        visible_devices = os.environ.get(self.visible_devices_env)
-        if visible_devices is None:
-            try:
-                return int(assigned_id)
-            except ValueError:
-                return assigned_id
-
-        visible_ids = [value.strip() for value in visible_devices.split(",") if value.strip()]
-        try:
-            return visible_ids.index(assigned_id)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"Ray assigned {self.resource_name} id {assigned_id}, but it is absent from "
-                f"{self.visible_devices_env}={visible_devices!r}"
-            ) from exc
-
     def train_runtime_env(
         self,
         args: Any,

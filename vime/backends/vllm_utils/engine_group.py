@@ -144,8 +144,7 @@ class ServerGroup:
             env_vars["PYTORCH_CUDA_ALLOC_CONF"] = ",".join(
                 kv for kv in _alloc.split(",") if kv and not kv.strip().startswith("expandable_segments")
             )
-            if platform.is_npu:
-                env_vars = platform.ray.rollout_runtime_env(self.args, env_vars)
+            env_vars = platform.ray.rollout_runtime_env(self.args, env_vars)
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,
                 scheduling_strategy=scheduling_strategy,

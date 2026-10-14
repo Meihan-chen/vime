@@ -17,18 +17,14 @@ logger = logging.getLogger(__name__)
 @ray.remote(num_gpus=1)
 class InfoActor:
     def get_ip_and_gpu_id(self):
-        platform = current_platform()
-        if platform.is_npu:
-            accelerator_ids = platform.ray.accelerator_ids()
-            if accelerator_ids:
-                return ray.util.get_node_ip_address(), accelerator_ids[0]
-
+        ray_spec = current_platform().ray
+        accelerator_ids = ray_spec.accelerator_ids()
+        if not accelerator_ids:
             raise RuntimeError(
-                f"No {platform.ray.resource_name} accelerator IDs found. "
+                f"No {ray_spec.resource_name} accelerator IDs are assigned to this actor. "
                 f"Accelerator IDs: {ray.get_runtime_context().get_accelerator_ids()}"
             )
-
-        return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
+        return ray.util.get_node_ip_address(), accelerator_ids[0]
 
 
 def sort_key(x):
@@ -59,9 +55,7 @@ def _create_placement_group(num_gpus):
 
     platform = current_platform()
     resource_name = platform.ray.resource_name
-    bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
-    if platform.is_npu:
-        bundles = [platform.ray.bundle_resources() for _ in range(num_gpus)]
+    bundles = [platform.ray.bundle_resources() for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
     num_bundles = len(bundles)
 

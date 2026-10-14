@@ -20,11 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_local_gpu_id():
-    platform = current_platform()
-    if platform.is_npu:
-        return platform.ray.local_device_id()
-
-    return accelerator.resolve_visible_device_id(ray.get_gpu_ids()[0])
+    return accelerator.resolve_visible_device_id(current_platform().ray.accelerator_ids()[0])
 
 
 class TrainRayActor(RayActor):
