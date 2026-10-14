@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -178,6 +179,51 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
     assert actor_allocations[0]["resources"] == {"ACCEL": 0.4}
     assert actor_allocations[0]["num_gpus"] == 0
     ray_ops.actor_options.assert_called_once_with(0.4)
+
+
+@pytest.mark.parametrize("backend", ["megatron", "fsdp"])
+@pytest.mark.parametrize("offload", [False, True])
+@pytest.mark.parametrize(
+    "library",
+    [
+        "torch_memory_saver_hook_mode_preload_cu13.abi3.so",
+        "torch_memory_saver_hook_mode_preload_cu12.abi3.so",
+        "torch_memory_saver_hook_mode_preload.abi3.so",
+        None,
+    ],
+)
+def test_train_group_preserves_main_offload_env(monkeypatch, tmp_path, backend, offload, library):
+    from vime.ray import actor_group as actor_group_module
+
+    tms = types.ModuleType("torch_memory_saver")
+    tms.__file__ = str(tmp_path / "torch_memory_saver" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "torch_memory_saver", tms)
+    if library is not None:
+        (tmp_path / library).touch()
+    monkeypatch.setattr(actor_group_module, "current_platform", lambda: _fake_platform(None))
+    remote = Mock(return_value=lambda actor: actor)
+    monkeypatch.setattr(actor_group_module.ray, "remote", remote)
+    args = SimpleNamespace(
+        train_env_vars={"USER_ENV": "yes"}, offload_train=offload, train_backend=backend, use_routing_replay=False
+    )
+    # No actor workers are created; inspect exactly what Ray would receive.
+    group = actor_group_module.RayTrainGroup(args, 0, 1, (object(), [], []), actor_cls=object)
+    if offload and library is None:
+        with pytest.raises(FileNotFoundError, match="Cannot find torch_memory_saver dynamic library"):
+            group._allocate_gpus_for_actor(group._pg, 1)
+        remote.assert_not_called()
+        return
+
+    group._allocate_gpus_for_actor(group._pg, 1)
+
+    env = remote.call_args.kwargs["runtime_env"]["env_vars"]
+    assert env["USER_ENV"] == "yes"
+    if offload:
+        assert Path(env["LD_PRELOAD"]) == tmp_path / library
+        assert env["TMS_INIT_ENABLE"] == "1"
+        assert env["TMS_INIT_ENABLE_CPU_BACKUP"] == "1"
+    else:
+        assert not {"LD_PRELOAD", "TMS_INIT_ENABLE", "TMS_INIT_ENABLE_CPU_BACKUP"} & env.keys()
 
 
 @pytest.mark.parametrize("is_npu", [False, True])

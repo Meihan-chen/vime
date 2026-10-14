@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 ARG BASE_IMAGE=quay.io/atlas-ci/vllm-ascend
-ARG BASE_IMAGE_TAG=v0.28.0-fd81546-a3
+ARG BASE_IMAGE_TAG=v0.30.0-e00cb64-a3
 FROM ${BASE_IMAGE}:${BASE_IMAGE_TAG}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -33,7 +33,6 @@ ENV SOC_VERSION=$SOC_VERSION \
 # PATCH MAINTENANCE: keep patch COPY/apply operations and
 # docker/npu_patch/series.conf synchronized.
 COPY docker/npu_patch /opt/npu_patch
-COPY docker/patch/latest/megatron.patch /opt/npu_patch/megatron-common.patch
 
 RUN git config --global http.sslVerify false
 
@@ -78,14 +77,10 @@ RUN git clone https://gitcode.com/Ascend/MegatronAdaptor.git /root/MegatronAdapt
     git -C /root/TransformerEngineNPU checkout "${TRANSFORMER_ENGINE_NPU_COMMIT}"
 
 # Apply NPU training-stack patches from the build-context snapshot.
-# The NPU Megatron patch is based on the common Vime Megatron patch, so the
-# common patch must be applied first. fla 0.5.2 supplies the GDN kernels;
-# the adaptor torch stand-in rejects residual and must stay disabled.
+# The standalone Megatron patch targets the pinned NPU training baseline.
+# fla 0.5.2 supplies the GDN kernels; the adaptor torch stand-in rejects
+# residual and must stay disabled.
 RUN git -C /root/Megatron-LM apply --check --whitespace=nowarn \
-      /opt/npu_patch/megatron-common.patch && \
-    git -C /root/Megatron-LM apply --whitespace=nowarn \
-      /opt/npu_patch/megatron-common.patch && \
-    git -C /root/Megatron-LM apply --check --whitespace=nowarn \
       /opt/npu_patch/megatron.patch && \
     git -C /root/Megatron-LM apply --whitespace=nowarn \
       /opt/npu_patch/megatron.patch && \

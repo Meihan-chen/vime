@@ -6,9 +6,10 @@ This guide provides instructions for installing Vime with NPU support, including
 
 | Component | Version/Commit | Source |
 | --- | --- | --- |
-| Base image | `v0.28.0-fd81546-a3` | `quay.io/atlas-ci/vllm-ascend` |
-| vLLM | `e6bfe03ad73a3330cb427885aa90d97a12e1c704` | [GitHub](https://github.com/vllm-project/vllm) |
-| vLLM-Ascend | `fd815467c221ee600137f6bdd53fe354d5e7c999` | [GitHub](https://github.com/vllm-project/vllm-ascend) |
+| Base image | `v0.30.0-e00cb64-a3` | `quay.io/atlas-ci/vllm-ascend` |
+| vLLM | `8cc9aa5ad350f6f80cf3bebb298d410803ff75a9` | [GitHub](https://github.com/vllm-project/vllm) |
+| vLLM-Ascend | `e00cb64a4469dfcd1ea8ba2d5d5e4eb2ab7bcaf1` | [GitHub](https://github.com/vllm-project/vllm-ascend) |
+| FLA (serving, included in base image) | `flash-linear-attention-npu-a3==26.9.1+deva4a7958` | [v26.9.1-beta2](https://github.com/flashserve/flash-linear-attention-npu/releases/tag/v26.9.1-beta2) |
 | Megatron-LM | `1dcf0dafa884ad52ffb243625717a3471643e087` | [GitHub](https://github.com/NVIDIA/Megatron-LM) |
 | MegatronAdaptor | `15582addff3f3d4680e350826fa70d012b475509` | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor) |
 | TransformerEngineNPU | `d743c83d060d5edc48867ecb9e93ec80d81860e4` | [GitCode](https://gitcode.com/Ascend/TransformerEngineNPU) |
@@ -17,7 +18,7 @@ This guide provides instructions for installing Vime with NPU support, including
 
 ## Preparing the Running Environment
 
-Run the following steps inside the base image listed above, with the Ascend devices and host driver mounted. The base image provides Python, CANN, PyTorch, torch-npu, vLLM and vLLM-Ascend.
+Run the following steps inside the base image listed above, with the Ascend devices and host driver mounted. The base image provides Python, CANN, PyTorch, torch-npu, vLLM, vLLM-Ascend and serving FLA.
 
 Use a checkout of this Vime revision at `/root/vime`. Start with unpatched dependency source trees; do not repeat these steps in an already-patched Vime image.
 
@@ -58,14 +59,13 @@ git -C /vllm-workspace/vllm-ascend apply "${PATCH_DIR}/vllm-ascend.patch"
 
 ### 2. Megatron-LM
 
-Apply the common Megatron patch before the NPU patch.
+Apply the single NPU patch directly to the pinned commit. Do not apply the public
+`docker/patch/latest/megatron.patch` first.
 
 ```bash
 git clone https://github.com/NVIDIA/Megatron-LM.git "${VIME_INSTALL_ROOT}/Megatron-LM"
 git -C "${VIME_INSTALL_ROOT}/Megatron-LM" checkout 1dcf0dafa884ad52ffb243625717a3471643e087
 
-git -C "${VIME_INSTALL_ROOT}/Megatron-LM" apply --check "${VIME_INSTALL_ROOT}/vime/docker/patch/latest/megatron.patch"
-git -C "${VIME_INSTALL_ROOT}/Megatron-LM" apply "${VIME_INSTALL_ROOT}/vime/docker/patch/latest/megatron.patch"
 git -C "${VIME_INSTALL_ROOT}/Megatron-LM" apply --check "${PATCH_DIR}/megatron.patch"
 git -C "${VIME_INSTALL_ROOT}/Megatron-LM" apply "${PATCH_DIR}/megatron.patch"
 
@@ -85,6 +85,8 @@ pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/TransformerE
 
 git clone https://gitcode.com/Ascend/MegatronAdaptor.git "${VIME_INSTALL_ROOT}/MegatronAdaptor"
 git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" checkout 15582addff3f3d4680e350826fa70d012b475509
+git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" apply --check "${PATCH_DIR}/megatron-adaptor.patch"
+git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" apply "${PATCH_DIR}/megatron-adaptor.patch"
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MegatronAdaptor"
 ```
 
@@ -103,7 +105,12 @@ pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MindSpeed"
 ```bash
 pip install -r "${VIME_INSTALL_ROOT}/vime/requirements.txt"
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/vime"
+pip install --no-deps einops 'fla-core==0.5.2' 'flash-linear-attention==0.5.2'
 ```
+
+Training FLA 0.5.2 does not replace the serving FLA package required by vLLM-Ascend;
+keep the latter as provided by the base image. Do not install the training package's
+`npu` extra, which pins a different torch / torch-npu pair.
 
 ### 6. torch_memory_saver
 

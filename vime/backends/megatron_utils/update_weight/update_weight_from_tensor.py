@@ -182,7 +182,7 @@ class UpdateWeightFromTensor:
         self.rollout_engines = list(rollout_engines[:colocate_engine_nums])
         distributed_rollout_engines = list(rollout_engines[colocate_engine_nums:])
         for trainer in self._native_trainers:
-            if trainer.init_info_cls.backend == "nccl":
+            if trainer.init_info_cls.backend == current_platform().weight_transfer.backend("nccl"):
                 disconnect_rollout_engines_from_distributed(trainer, distributed_rollout_engines)
             else:
                 trainer.shutdown()

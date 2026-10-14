@@ -169,9 +169,20 @@ def _updater(update_module, **overrides):
     return updater
 
 
-def _install_ipc_trainer_stubs(monkeypatch, created):
+def _install_ipc_trainer_stubs(monkeypatch, created, platform_name="cuda"):
     factory_module = types.ModuleType("vllm.distributed.weight_transfer.factory")
-    ipc_module = types.ModuleType("vllm.distributed.weight_transfer.ipc_engine")
+    if platform_name == "npu":
+        from vime.platforms import npu
+
+        monkeypatch.setattr(npu, "_ensure_torch_npu", lambda: None)
+        plugins = types.ModuleType("vllm.plugins")
+        plugins.load_general_plugins = lambda: None
+        monkeypatch.setitem(sys.modules, plugins.__name__, plugins)
+        ipc_module = types.ModuleType("vllm_ascend.distributed.weight_transfer.npu_ipc_engine")
+        ipc_backend = "npu_ipc"
+    else:
+        ipc_module = types.ModuleType("vllm.distributed.weight_transfer.ipc_engine")
+        ipc_backend = "ipc"
 
     class IPCTrainerInitInfo:
         def __init__(self, **kwargs):
@@ -181,34 +192,47 @@ def _install_ipc_trainer_stubs(monkeypatch, created):
         @staticmethod
         def trainer_init(init_info, *, client, source):
             created.append((init_info, client, source))
-            return RecordingTrainer(client, backend="ipc")
+            return RecordingTrainer(client, backend=ipc_backend)
 
     factory_module.WeightTransferTrainerFactory = Factory
     ipc_module.IPCTrainerInitInfo = IPCTrainerInitInfo
+    ipc_module.NPUIPCTrainerInitInfo = IPCTrainerInitInfo
     monkeypatch.setitem(sys.modules, factory_module.__name__, factory_module)
     monkeypatch.setitem(sys.modules, ipc_module.__name__, ipc_module)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("backend,is_sender", [("nccl", True), ("nccl", False), ("ipc", True)])
-def test_connect_uses_native_ipc_and_nccl_trainers(update_module, monkeypatch, backend, is_sender):
+@pytest.mark.parametrize(
+    "platform_name,backend,is_sender",
+    [
+        ("cuda", "nccl", True),
+        ("cuda", "nccl", False),
+        ("cuda", "ipc", True),
+        ("npu", "hccl", True),
+        ("npu", "hccl", False),
+        ("npu", "npu_ipc", True),
+    ],
+)
+def test_connect_uses_native_ipc_and_distributed_trainers(
+    update_module, monkeypatch, platform_name, backend, is_sender
+):
     from vime.platforms import get_platform
 
-    monkeypatch.setattr(update_module, "current_platform", lambda: get_platform("cuda"))
+    monkeypatch.setattr(update_module, "current_platform", lambda: get_platform(platform_name))
     updater = _updater(update_module)
     old_trainer = RecordingTrainer(object(), backend=backend, is_sender=is_sender)
     updater._native_trainers = [old_trainer]
     engines = [RecordingEngine(), RecordingEngine()]
     ipc_created = []
-    nccl_created = []
-    _install_ipc_trainer_stubs(monkeypatch, ipc_created)
+    distributed_created = []
+    _install_ipc_trainer_stubs(monkeypatch, ipc_created, platform_name)
     monkeypatch.setattr(update_module, "configure_expert_routing", lambda **kwargs: (None, []))
 
-    def create_nccl(client, source, gpu_counts):
-        nccl_created.append((client, source, gpu_counts))
-        return RecordingTrainer(client)
+    def create_distributed(client, source, gpu_counts):
+        distributed_created.append((client, source, gpu_counts))
+        return RecordingTrainer(client, backend="hccl" if platform_name == "npu" else "nccl", is_sender=is_sender)
 
-    monkeypatch.setattr(update_module, "connect_rollout_engines_from_distributed", create_nccl)
+    monkeypatch.setattr(update_module, "connect_rollout_engines_from_distributed", create_distributed)
     updater.connect_rollout_engines(
         engines,
         object(),
@@ -218,11 +242,93 @@ def test_connect_uses_native_ipc_and_nccl_trainers(update_module, monkeypatch, b
 
     assert old_trainer.shutdown_calls == 1
     assert engines[0].destroy_weights_update_group.calls == []
-    assert len(engines[1].destroy_weights_update_group.calls) == int(backend == "nccl" and is_sender)
+    expected_remote_releases = int(backend in {"nccl", "hccl"} and is_sender)
+    assert len(engines[1].destroy_weights_update_group.calls) == expected_remote_releases
     assert len(updater._native_trainers) == 2
     assert ipc_created[0][0].packed is True
     assert ipc_created[0][2] is updater._source
-    assert nccl_created[0][1:] == (updater._source, [2])
+    assert distributed_created[0][1:] == (updater._source, [2])
+
+    for _ in range(2):
+        previous = list(updater._native_trainers)
+        updater.connect_rollout_engines(engines, object(), engine_gpu_counts=[2, 2], engine_gpu_offsets=[0, 2])
+        expected_remote_releases += int(is_sender)
+        assert all(trainer.shutdown_calls == 1 for trainer in previous)
+        assert all(trainer not in previous for trainer in updater._native_trainers)
+        assert engines[0].destroy_weights_update_group.calls == []
+        assert len(engines[1].destroy_weights_update_group.calls) == expected_remote_releases
+    assert old_trainer.shutdown_calls == 1
+    assert len(ipc_created) == len(distributed_created) == 3
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("platform_name,backend", [("cuda", "nccl"), ("npu", "hccl")])
+@pytest.mark.parametrize("failure", [None, "local_shutdown", "remote_error", "remote_timeout"])
+def test_reconnect_waits_for_distributed_release(update_module, monkeypatch, platform_name, backend, failure):
+    from vime.platforms import get_platform
+
+    monkeypatch.setattr(update_module, "current_platform", lambda: get_platform(platform_name))
+    monkeypatch.setattr(update_module, "configure_expert_routing", lambda **kwargs: (None, []))
+    updater = _updater(update_module)
+    trainer = RecordingTrainer(object(), backend=backend)
+    updater._native_trainers = [trainer]
+    engines = [RecordingEngine(), RecordingEngine()]
+    events = []
+    refs = [object(), object()]
+
+    def submit_release(index, group_name):
+        assert group_name is None
+        events.append(("remote", index))
+        return refs[index]
+
+    for index, engine in enumerate(engines):
+        monkeypatch.setattr(
+            engine.destroy_weights_update_group,
+            "remote",
+            lambda group_name, index=index: submit_release(index, group_name),
+        )
+
+    def shutdown():
+        events.append("local")
+        if failure == "local_shutdown":
+            raise RuntimeError("local release failed")
+
+    def wait(pending):
+        assert pending == refs
+        events.append("wait")
+        if failure == "remote_error":
+            raise RuntimeError("remote release failed")
+        if failure == "remote_timeout":
+            raise TimeoutError("remote release timed out")
+
+    def connect(client, source, gpu_counts):
+        events.append("connect")
+        assert gpu_counts == [2, 2]
+        return RecordingTrainer(client, backend=backend)
+
+    monkeypatch.setattr(trainer, "shutdown", shutdown)
+    disconnect = update_module.disconnect_rollout_engines_from_distributed
+    monkeypatch.setattr(sys.modules[disconnect.__module__].ray, "get", wait)
+    monkeypatch.setattr(update_module, "connect_rollout_engines_from_distributed", connect)
+
+    def reconnect():
+        updater.connect_rollout_engines(engines, object(), engine_gpu_counts=[2, 2], engine_gpu_offsets=[2, 4])
+
+    if failure:
+        error = TimeoutError if failure == "remote_timeout" else RuntimeError
+        with pytest.raises(error, match="release"):
+            reconnect()
+        assert updater._native_trainers == [trainer]
+    else:
+        reconnect()
+        assert updater._native_trainers[0] is not trainer
+
+    expected = [("remote", 0), ("remote", 1), "local"]
+    if failure != "local_shutdown":
+        expected.append("wait")
+    if failure is None:
+        expected.append("connect")
+    assert events == expected
 
 
 @pytest.mark.unit

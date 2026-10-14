@@ -111,33 +111,13 @@ def execute_train(
     if config is None:
         config = ExecuteTrainConfig()
 
-    # Platform seam: non-CUDA delegates to the launcher; the CUDA path below stays
-    # byte-identical to upstream.
     platform = current_platform()
-    if platform.name != "cuda":
-        cmds = launch_commands(
-            platform,
-            train_args=train_args,
-            num_devices=num_gpus_per_node,
-            megatron_model_type=megatron_model_type,
-            repo_base_dir=str(repo_base_dir),
-            train_script=train_script,
-            extra_env={**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)},
-            external_ray=get_bool_env_var("VIME_SCRIPT_EXTERNAL_RAY"),
-            master_addr=os.environ.get("MASTER_ADDR", "127.0.0.1"),
-        )
-        for cmd in cmds[:-1]:
-            exec_command(cmd)
-        if before_ray_job_submit is not None:
-            before_ray_job_submit()
-        exec_command(cmds[-1])
-        return
-
     external_ray = get_bool_env_var("VIME_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
     # Launching another trainer must preserve independently owned serving.
     # Successful training cleans up its own resources; failures retain them.
+    ray_running = False
     if not external_ray:
         # A manual trainer restart must leave the Ray head and its detached
         # rollout session alive. A stale address file alone is not proof of a
@@ -148,12 +128,34 @@ def execute_train(
             ).returncode
             == 0
         )
-        if not ray_running:
-            exec_command(
-                # will prevent ray from buffering stdout/stderr
-                f"export PYTHONUNBUFFERED=1 && "
-                f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
-            )
+
+    # NPU supplies device resources and environment after the shared liveness check.
+    if platform.name != "cuda":
+        cmds = launch_commands(
+            platform,
+            train_args=train_args,
+            num_devices=num_gpus_per_node,
+            megatron_model_type=megatron_model_type,
+            repo_base_dir=str(repo_base_dir),
+            extra_env={**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)},
+            external_ray=external_ray,
+            ray_running=ray_running,
+            master_addr=master_addr,
+        )
+        for cmd in cmds[:-1]:
+            exec_command(cmd)
+        if before_ray_job_submit is not None:
+            before_ray_job_submit()
+        if get_bool_env_var("VIME_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
+            exec_command(cmds[-1])
+        return
+
+    if not external_ray and not ray_running:
+        exec_command(
+            # will prevent ray from buffering stdout/stderr
+            f"export PYTHONUNBUFFERED=1 && "
+            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
+        )
 
     if (f := before_ray_job_submit) is not None:
         f()
