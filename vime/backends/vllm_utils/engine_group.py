@@ -10,7 +10,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from vime.backends.vllm_utils.vllm_config import ServerGroupConfig
 from vime.backends.vllm_utils.vllm_engine import VLLMEngine, _resolve_parallel_sizes
-from vime.platforms import current_platform
+from vime.backends.weight_transfer_registry import current as current_weight_transfer
 from vime.ray.resources import current as current_ray_resource
 from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, add_default_ray_env_vars
 
@@ -119,7 +119,6 @@ class ServerGroup:
         RolloutRayActor = ray.remote(VLLMEngine)
 
         rollout_engines = []
-        platform = current_platform()
         for i in range(len(self.all_engines)):
             if self.all_engines[i] is not None:
                 continue
@@ -145,7 +144,7 @@ class ServerGroup:
             env_vars["PYTORCH_CUDA_ALLOC_CONF"] = ",".join(
                 kv for kv in _alloc.split(",") if kv and not kv.strip().startswith("expandable_segments")
             )
-            env_vars = platform.ray.rollout_runtime_env(self.args, env_vars)
+            env_vars = current_weight_transfer().engine_runtime_env(self.args, env_vars)
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,
                 scheduling_strategy=scheduling_strategy,

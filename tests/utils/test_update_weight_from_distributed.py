@@ -17,6 +17,7 @@ import _unit_stubs
 import pytest
 import torch
 
+from vime.backends import weight_transfer_registry
 from vime.utils.types import ParamInfo
 
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_distributed"
@@ -191,7 +192,9 @@ def test_nccl_trainer_uses_single_packed_buffer(update_module, monkeypatch):
     from vime.platforms import get_platform
 
     adapter = sys.modules[update_module.create_nccl_trainer.__module__]
-    monkeypatch.setattr(adapter, "current_platform", lambda: get_platform("cuda"))
+    monkeypatch.setattr(
+        adapter, "current_weight_transfer", lambda: weight_transfer_registry.WeightTransfer()
+    )
     created = []
 
     class NCCLTrainerInitInfo:

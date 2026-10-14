@@ -13,6 +13,8 @@ if str(_tests_root) not in sys.path:
 
 import _unit_stubs
 import pytest
+
+from vime.backends import weight_transfer_registry
 import requests
 import torch
 
@@ -89,6 +91,15 @@ class _MockResponse:
         if self._json_data is None:
             raise ValueError("no json")
         return self._json_data
+
+
+
+def _transfer_for(platform_name):
+    if platform_name == "cuda":
+        return weight_transfer_registry.WeightTransfer()
+    from vime_plugins.ascend.weight_transfer import NpuWeightTransfer
+
+    return NpuWeightTransfer()
 
 
 @pytest.mark.unit
@@ -310,7 +321,7 @@ def test_compute_server_args_external_check_fields_skip_orchestration_fields(vll
     # The backend assertion below is CUDA's, so do not read the ambient platform.
     from vime.platforms import get_platform
 
-    monkeypatch.setattr(mod, "current_platform", lambda: get_platform("cuda"))
+    monkeypatch.setattr(mod, "current_weight_transfer", lambda: weight_transfer_registry.WeightTransfer())
 
     sa, check_fields = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
     assert "model" not in check_fields
@@ -405,7 +416,7 @@ def test_compute_server_args_uses_native_platform_backend(vllm_args, monkeypatch
     monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
     vllm_args.vllm_worker_extension_cls = ""
     vllm_args.colocate = colocate
-    monkeypatch.setattr(mod, "current_platform", lambda: get_platform(platform_name))
+    monkeypatch.setattr(mod, "current_weight_transfer", lambda: _transfer_for(platform_name))
 
     sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
 
@@ -419,7 +430,7 @@ def test_compute_server_args_keeps_user_worker_extension(vllm_args, monkeypatch)
 
     monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
     vllm_args.vllm_worker_extension_cls = "example.UserWorkerExtension"
-    monkeypatch.setattr(mod, "current_platform", lambda: get_platform("npu"))
+    monkeypatch.setattr(mod, "current_weight_transfer", lambda: _transfer_for("npu"))
 
     sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
 

@@ -186,17 +186,21 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
 
     runtime_env_inputs = []
     ray_ops = SimpleNamespace(
-        rollout_runtime_env=lambda args, env: (runtime_env_inputs.append((args, dict(env))) or {**env, "PLATFORM_ENV": "rollout"})
-        if is_npu
-        else dict(env),
         actor_options=Mock(
             side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}
             if is_npu
             else {"num_gpus": fraction}
         ),
     )
-    monkeypatch.setattr(rollout_module, "current_platform", lambda: _fake_platform(ray_ops, is_npu=is_npu))
+    transfer = SimpleNamespace(
+        engine_runtime_env=lambda args, env: (
+            runtime_env_inputs.append((args, dict(env))) or {**env, "PLATFORM_ENV": "rollout"}
+        )
+        if is_npu
+        else dict(env),
+    )
     monkeypatch.setattr(rollout_module, "current_ray_resource", lambda: ray_ops)
+    monkeypatch.setattr(rollout_module, "current_weight_transfer", lambda: transfer)
 
     actor_options = []
 

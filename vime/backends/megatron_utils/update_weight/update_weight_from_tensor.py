@@ -13,7 +13,7 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
-from vime.platforms import current_platform
+from vime.backends.weight_transfer_registry import current as current_weight_transfer
 from vime.utils import accelerator
 from vime.utils.distributed_utils import get_gloo_group
 from vime.utils.types import ParamInfo
@@ -192,7 +192,7 @@ class UpdateWeightFromTensor:
 
                 client = VimeRayWeightSyncClient(self.rollout_engines, lambda: self.weight_version)
                 trainer = WeightTransferTrainerFactory.trainer_init(
-                    current_platform().weight_transfer.trainer_init_info(
+                    current_weight_transfer().trainer_init_info(
                         colocate=True,
                         rank=dist.get_rank(),
                         packed=True,

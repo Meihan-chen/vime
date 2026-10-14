@@ -18,6 +18,7 @@ import _unit_stubs
 import pytest
 import torch
 
+from vime.backends import weight_transfer_registry
 from vime.utils.types import ParamInfo
 
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_tensor"
@@ -185,13 +186,17 @@ def _install_ipc_trainer_stubs(monkeypatch, created):
     ipc_module.IPCTrainerInitInfo = IPCTrainerInitInfo
     monkeypatch.setitem(sys.modules, factory_module.__name__, factory_module)
     monkeypatch.setitem(sys.modules, ipc_module.__name__, ipc_module)
+    monkeypatch.setattr(
+        _module(), "current_weight_transfer", lambda: weight_transfer_registry.WeightTransfer()
+    )
+
+
+def _module():
+    return sys.modules[MODULE_PATH]
 
 
 @pytest.mark.unit
 def test_connect_uses_native_ipc_and_nccl_trainers(update_module, monkeypatch):
-    from vime.platforms import get_platform
-
-    monkeypatch.setattr(update_module, "current_platform", lambda: get_platform("cuda"))
     updater = _updater(update_module)
     old_trainer = RecordingTrainer(object())
     updater._native_trainers = [old_trainer]
