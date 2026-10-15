@@ -67,6 +67,9 @@ steps:
       fi
 
       sed -i '/^RUN git config --global http.sslVerify false/i RUN git config --global url."https://gh-proxy.test.osinfra.cn/https://github.com/".insteadOf "https://github.com/"' docker/Dockerfile.npu
+      sed -i \
+        's|git remote add origin https://github\.com/vllm-project/router\.git|git remote add origin https://gh-proxy.test.osinfra.cn/https://github.com/vllm-project/router.git|' \
+        docker/Dockerfile.npu
       sed -i '/^# syntax=docker\/dockerfile:1\.7$$/d' docker/Dockerfile.npu
 
       export DOCKER_CONFIG=/home/user/.docker
