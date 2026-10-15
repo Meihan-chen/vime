@@ -48,6 +48,7 @@ steps:
       VIME_IMAGE_TAG: "${BUILDKITE_COMMIT}"
       IMAGE_NAME: "vime-ci-npu"
       IMAGE_REGISTRY: "swr.cn-southwest-2.myhuaweicloud.com/modelfoundry"
+      RUST_IMAGE: "swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/vllm-ascend/rust:1.95-bookworm"
       BUILDKITD_ADDR: "tcp://buildkitd-service.buildkitd:1234"
     command: |
       set -ex
@@ -78,6 +79,7 @@ steps:
         --local context=. \
         --local dockerfile=./docker \
         --opt filename=Dockerfile.npu \
+        --opt build-arg:RUST_IMAGE="$${RUST_IMAGE}" \
         --opt build-arg:APTMIRROR=http://cache-service.nginx-pypi-cache.svc.cluster.local:8081 \
         --opt build-arg:PIP_INDEX_URL=http://cache-service.nginx-pypi-cache.svc.cluster.local/pypi/simple \
         --secret id=dockerconfig,src=/home/user/.docker/config.json \
