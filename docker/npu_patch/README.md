@@ -30,7 +30,7 @@ export PATCH_DIR="${VIME_INSTALL_ROOT}/vime/docker/npu_patch"
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 ```
 
-Preserve the base image's serving package versions when installing training dependencies:
+Preserve the base image's serving package versions and pin the data dependencies compatible with NumPy 1.26.4:
 
 ```bash
 export PIP_CONSTRAINT="$(mktemp /tmp/vime-npu-constraints.XXXXXX)"
@@ -41,9 +41,11 @@ import os
 names = [
     "numpy", "ray", "torch", "torch-npu", "torchvision",
     "transformers", "triton-ascend", "vllm", "vllm-ascend",
+    "fastapi", "starlette",
 ]
 with open(os.environ["PIP_CONSTRAINT"], "w") as constraints:
     constraints.write("\n".join(f"{name}=={metadata.version(name)}" for name in names) + "\n")
+    constraints.write("datasets==5.0.1\npyarrow==25.0.1\n")
 PY
 ```
 
@@ -178,6 +180,7 @@ Set the source paths before running Vime:
 ```bash
 export PYTHONPATH="${VIME_INSTALL_ROOT}/Megatron-LM:${VIME_INSTALL_ROOT}/MegatronAdaptor:${VIME_INSTALL_ROOT}/TransformerEngineNPU:${VIME_INSTALL_ROOT}/vime${PYTHONPATH:+:${PYTHONPATH}}"
 
+python3 -c 'import numpy, pyarrow, datasets, fastapi, starlette; from ray._private.serialization import SerializationContext; from ray._private.worker import global_worker; SerializationContext(global_worker); print(f"Data/Ray check passed: numpy={numpy.__version__}, pyarrow={pyarrow.__version__}, datasets={datasets.__version__}, fastapi={fastapi.__version__}, starlette={starlette.__version__}")'
 python3 -c 'import megatron, mindspeed, megatron_adaptor, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend'
 ```
 

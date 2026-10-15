@@ -135,7 +135,8 @@ RUN git -C /vllm-workspace/vllm-ascend apply --check --whitespace=nowarn \
       /opt/npu_patch/vllm-ascend.patch
 
 # Protect the serving stack while installing Vime dependencies.
-RUN python3 -c 'import importlib.metadata as m; names = ["numpy", "ray", "torch", "torch-npu", "torchvision", "transformers", "triton-ascend", "vllm", "vllm-ascend"]; open("/tmp/vime-npu-constraints.txt", "w").write("\n".join(f"{name}=={m.version(name)}" for name in names) + "\n")'
+RUN python3 -c 'import importlib.metadata as m; names = ["numpy", "ray", "torch", "torch-npu", "torchvision", "transformers", "triton-ascend", "vllm", "vllm-ascend", "fastapi", "starlette"]; open("/tmp/vime-npu-constraints.txt", "w").write("\n".join(f"{name}=={m.version(name)}" for name in names) + "\n")' && \
+    printf '%s\n' 'datasets==5.0.1' 'pyarrow==25.0.1' >> /tmp/vime-npu-constraints.txt
 
 # Training source dependencies.
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git /root/Megatron-LM && \
@@ -212,6 +213,7 @@ RUN git clone --depth 1 --branch 2026.6.0 \
 
 # Minimal import check.
 RUN source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    python3 -c 'import numpy, pyarrow, datasets, fastapi, starlette; from ray._private.serialization import SerializationContext; from ray._private.worker import global_worker; SerializationContext(global_worker); print(f"Data/Ray check passed: numpy={numpy.__version__}, pyarrow={pyarrow.__version__}, datasets={datasets.__version__}, fastapi={fastapi.__version__}, starlette={starlette.__version__}")' && \
     python3 -c 'import megatron, mindspeed, megatron_adaptor, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend;'
 
 WORKDIR /root/vime

@@ -80,6 +80,7 @@ steps:
         --local context=. \
         --local dockerfile=./docker \
         --opt filename=Dockerfile.npu \
+        --opt build-arg:VIME_COMMIT="$${VIME_IMAGE_TAG}" \
         --opt build-arg:RUST_IMAGE="$${RUST_IMAGE}" \
         --opt build-arg:CARGO_REGISTRY="$${CARGO_REGISTRY}" \
         --opt build-arg:APTMIRROR=http://cache-service.nginx-pypi-cache.svc.cluster.local:8081 \
