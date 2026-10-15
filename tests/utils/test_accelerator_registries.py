@@ -261,3 +261,55 @@ def test_memory_utils_keep_main_accelerator_surface(monkeypatch):
     memory_utils.clear_memory(clear_host_memory=True)
 
     assert calls == ["synchronize", "gc", "empty_cache", "empty_host_cache"]
+
+
+# ── Launch policy ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_default_accelerator_needs_no_launch_override(monkeypatch):
+    from vime.utils import device_env
+    from vime.utils.external_utils import launch
+
+    monkeypatch.setattr(device_env, "_REGISTRY", {})
+    monkeypatch.setattr(device_env.accelerator, "device_type", lambda: "cuda")
+
+    assert launch.launch_platform() is None
+
+
+@pytest.mark.unit
+def test_npu_launch_platform_advertises_its_own_ray_resource(monkeypatch):
+    from vime.utils import accelerator, device_env
+    from vime.utils.external_utils import launch
+
+    monkeypatch.setitem(device_env._REGISTRY, "npu", _npu_device_env())
+    monkeypatch.setattr(device_env.accelerator, "device_type", lambda: "npu")
+    monkeypatch.setattr(accelerator, "device_type", lambda: "npu")
+    monkeypatch.setattr(accelerator, "ray_resource_name", lambda: "NPU")
+    monkeypatch.setattr(accelerator, "ray_uses_native_gpu_resource", lambda: False)
+
+    platform = launch.launch_platform()
+
+    assert platform is not None
+    # The launch command must ask for the same resource name the process does.
+    assert platform.ray_start_args(8) == "--num-gpus 0 --resources '{\"NPU\": 8}'"
+    assert platform.env["HCCL_CONNECT_TIMEOUT"] == "7200"
+
+
+@pytest.mark.unit
+def test_native_gpu_resource_keeps_the_plain_ray_flag(monkeypatch):
+    from vime.utils import accelerator, device_env
+    from vime.utils.external_utils import launch
+
+    class StubDeviceEnv(DeviceEnv):
+        def launch_env(self):
+            return {"A": "1"}
+
+    monkeypatch.setitem(device_env._REGISTRY, "stub", StubDeviceEnv())
+    monkeypatch.setattr(device_env.accelerator, "device_type", lambda: "stub")
+    monkeypatch.setattr(accelerator, "device_type", lambda: "stub")
+    monkeypatch.setattr(accelerator, "ray_uses_native_gpu_resource", lambda: True)
+
+    platform = launch.launch_platform()
+
+    assert platform.ray_start_args(4) == "--num-gpus 4"

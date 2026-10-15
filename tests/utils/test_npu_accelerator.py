@@ -7,7 +7,7 @@ import torch
 
 from vime.utils import accelerator
 from vime.utils.accelerator.npu import NPUAccelerator
-from vime_plugins.ascend import megatron_bootstrap
+from vime_plugins.ascend import patches
 
 
 @pytest.fixture(autouse=True)
@@ -105,13 +105,13 @@ def test_safe_empty_cache_wraps_the_original_once(monkeypatch):
         cuda=SimpleNamespace(empty_cache=lambda: None),
     )
     monkeypatch.setattr(
-        megatron_bootstrap.importlib, "import_module", lambda name: fake_torch if name == "torch" else None
+        patches.importlib, "import_module", lambda name: fake_torch if name == "torch" else None
     )
 
-    megatron_bootstrap._install_safe_empty_cache()
+    patches._install_safe_empty_cache()
     wrapped = fake_torch.npu.empty_cache
     wrapped()
-    megatron_bootstrap._install_safe_empty_cache()
+    patches._install_safe_empty_cache()
 
     assert calls == ["original"]
     assert fake_torch.npu.empty_cache is wrapped
@@ -121,50 +121,50 @@ def test_safe_empty_cache_wraps_the_original_once(monkeypatch):
 @pytest.mark.unit
 def test_bootstrap_selects_npu_before_adaptor_and_attention(monkeypatch):
     events = []
-    monkeypatch.setitem(megatron_bootstrap.sys.modules, "torch_npu", SimpleNamespace())
-    monkeypatch.delitem(megatron_bootstrap.sys.modules, "megatron_adaptor", raising=False)
-    monkeypatch.setattr(megatron_bootstrap, "_install_safe_empty_cache", lambda: events.append("empty_cache_guard"))
-    original_import = megatron_bootstrap.importlib.import_module
+    monkeypatch.setitem(patches.sys.modules, "torch_npu", SimpleNamespace())
+    monkeypatch.delitem(patches.sys.modules, "megatron_adaptor", raising=False)
+    monkeypatch.setattr(patches, "_install_safe_empty_cache", lambda: events.append("empty_cache_guard"))
+    original_import = patches.importlib.import_module
 
     def import_module(name, *args, **kwargs):
-        if name in {"megatron_adaptor", "vime.backends.megatron_utils.npu_attention_patch"}:
+        if name in {"megatron_adaptor", "vime_plugins.ascend.attention_patch"}:
             assert accelerator.get_accelerator().name == "npu"
             events.append(name)
             return SimpleNamespace()
         return original_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(megatron_bootstrap.importlib, "import_module", import_module)
+    monkeypatch.setattr(patches.importlib, "import_module", import_module)
 
-    megatron_bootstrap.before_megatron_import()
+    patches.before_megatron_import()
 
     assert events == [
         "empty_cache_guard",
         "megatron_adaptor",
-        "vime.backends.megatron_utils.npu_attention_patch",
+        "vime_plugins.ascend.attention_patch",
     ]
 
 
 @pytest.mark.unit
 def test_bootstrap_is_skipped_once_the_patches_are_installed(monkeypatch):
-    monkeypatch.setitem(megatron_bootstrap.sys.modules, "megatron_adaptor", SimpleNamespace())
+    monkeypatch.setitem(patches.sys.modules, "megatron_adaptor", SimpleNamespace())
 
     def fail(*args, **kwargs):
         raise AssertionError("the vendor patches must not be installed twice")
 
-    monkeypatch.setattr(megatron_bootstrap.importlib, "import_module", fail)
+    monkeypatch.setattr(patches.importlib, "import_module", fail)
 
-    megatron_bootstrap.before_megatron_import()
+    patches.before_megatron_import()
 
 
 @pytest.mark.unit
 def test_bootstrap_rejects_preselected_cuda_without_replacing_it(monkeypatch):
     selected = accelerator.CUDAAccelerator()
     monkeypatch.setattr(accelerator, "_ACCELERATOR", selected)
-    monkeypatch.setitem(megatron_bootstrap.sys.modules, "torch_npu", SimpleNamespace())
-    monkeypatch.delitem(megatron_bootstrap.sys.modules, "megatron_adaptor", raising=False)
+    monkeypatch.setitem(patches.sys.modules, "torch_npu", SimpleNamespace())
+    monkeypatch.delitem(patches.sys.modules, "megatron_adaptor", raising=False)
 
     with pytest.raises(RuntimeError, match="already selected 'cuda'"):
-        megatron_bootstrap.before_megatron_import()
+        patches.before_megatron_import()
 
     assert accelerator._ACCELERATOR is selected
 
@@ -196,21 +196,21 @@ def test_reapplying_patches_passes_typed_args_and_restores_attention(monkeypatch
             )
         ),
         "megatron_adaptor.utils.args_utils": SimpleNamespace(get_full_args=lambda: full_args),
-        "vime.backends.megatron_utils.npu_attention_patch": SimpleNamespace(
+        "vime_plugins.ascend.attention_patch": SimpleNamespace(
             DotProductAttention=attention_class,
             npu_dot_product_attention_forward=vime_forward,
         ),
     }
-    original_import = megatron_bootstrap.importlib.import_module
+    original_import = patches.importlib.import_module
 
     def import_module(name, *args, **kwargs):
         if name in modules:
             return modules[name]
         return original_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(megatron_bootstrap.importlib, "import_module", import_module)
+    monkeypatch.setattr(patches.importlib, "import_module", import_module)
 
-    megatron_bootstrap.after_megatron_args(args)
+    patches.after_megatron_args(args)
 
     assert events == ["remove", ("pre", full_args), "features"]
     assert attention_class.forward is vime_forward

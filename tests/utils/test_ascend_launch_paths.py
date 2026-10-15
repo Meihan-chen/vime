@@ -2,7 +2,7 @@
 
 The reference image layout stays the default, so an unset environment keeps
 the historical strings; a site that installs CANN or the Megatron forks
-elsewhere overrides the roots instead of patching launch.py.
+elsewhere overrides the roots instead of editing the plugin.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import importlib.resources
 
 import pytest
 
-MODULE = "vime.utils.external_utils.launch"
+MODULE = "vime_plugins.ascend.device_env"
 
 REFERENCE_PYTHONPATH = (
     "/root/Megatron-LM:/root/vime:/root/MegatronAdaptor:/root/TransformerEngineNPU:"
@@ -22,7 +22,7 @@ REFERENCE_PYTHONPATH = (
 
 
 @pytest.fixture
-def launch(monkeypatch):
+def device_env(monkeypatch):
     for name in (
         "ASCEND_HOME",
         "ASCEND_TOOLKIT_HOME",
@@ -35,26 +35,26 @@ def launch(monkeypatch):
 
 
 @pytest.mark.unit
-def test_defaults_match_the_reference_image_layout(launch):
-    assert launch._npu_pythonpath() == REFERENCE_PYTHONPATH
-    assert launch._npu_ld_library_path().startswith("/usr/local/Ascend/driver/lib64:")
-    assert launch._npu_ld_library_path().endswith("/usr/local/Ascend/cann/aarch64-linux/devlib")
+def test_defaults_match_the_reference_image_layout(device_env):
+    assert device_env._launch_pythonpath() == REFERENCE_PYTHONPATH
+    assert device_env._launch_ld_library_path().startswith("/usr/local/Ascend/driver/lib64:")
+    assert device_env._launch_ld_library_path().endswith("/usr/local/Ascend/cann/aarch64-linux/devlib")
 
 
 @pytest.mark.unit
-def test_toolkit_home_is_honoured(launch, monkeypatch):
+def test_toolkit_home_is_honoured(device_env, monkeypatch):
     # CANN points ASCEND_TOOLKIT_HOME at a versioned directory on real images.
     monkeypatch.setenv("ASCEND_TOOLKIT_HOME", "/opt/cann-9.1.0")
 
-    assert "/opt/cann-9.1.0/python/site-packages" in launch._npu_pythonpath()
-    assert "/opt/cann-9.1.0/lib64" in launch._npu_ld_library_path()
+    assert "/opt/cann-9.1.0/python/site-packages" in device_env._launch_pythonpath()
+    assert "/opt/cann-9.1.0/lib64" in device_env._launch_ld_library_path()
 
 
 @pytest.mark.unit
-def test_repo_root_is_honoured(launch, monkeypatch):
+def test_repo_root_is_honoured(device_env, monkeypatch):
     monkeypatch.setenv("VIME_REPO_ROOT", "/workspace")
 
-    pythonpath = launch._npu_pythonpath()
+    pythonpath = device_env._launch_pythonpath()
 
     assert pythonpath.startswith("/workspace/Megatron-LM:/workspace/vime:")
     assert "/root/" not in pythonpath
@@ -64,18 +64,18 @@ def test_repo_root_is_honoured(launch, monkeypatch):
 @pytest.mark.parametrize(
     "variable,accessor",
     [
-        ("VIME_NPU_PYTHONPATH", "_npu_pythonpath"),
-        ("VIME_NPU_LD_LIBRARY_PATH", "_npu_ld_library_path"),
+        ("VIME_NPU_PYTHONPATH", "_launch_pythonpath"),
+        ("VIME_NPU_LD_LIBRARY_PATH", "_launch_ld_library_path"),
     ],
 )
-def test_full_override_wins(launch, monkeypatch, variable, accessor):
+def test_full_override_wins(device_env, monkeypatch, variable, accessor):
     monkeypatch.setenv(variable, "/only/this")
 
-    assert getattr(launch, accessor)() == "/only/this"
+    assert getattr(device_env, accessor)() == "/only/this"
 
 
 @pytest.mark.unit
 def test_source_carries_no_hardcoded_repo_paths():
     # The literals must live in the two default helpers only.
-    source = importlib.resources.files("vime.utils.external_utils").joinpath("launch.py").read_text()
+    source = importlib.resources.files("vime_plugins.ascend").joinpath("device_env.py").read_text()
     assert '"/root/Megatron-LM:/root/vime:' not in source

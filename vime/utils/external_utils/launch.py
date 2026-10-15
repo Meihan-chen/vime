@@ -1,137 +1,53 @@
-"""Device-specific launch policy for the vime test/example harness.
+"""Launch policy for the vime test and example harness.
 
-Used only by the test and example launch utilities (`command_utils.execute_train`), not by
-vime core: a `Platform` describes one accelerator for the purpose of *launching a job* — how
-Ray advertises its devices, the device runtime env, and how to construct the launch
-command. It adapts the selected accelerator to shell commands.
+Used only by the launch utilities in ``command_utils``, not by vime core. A
+``Platform`` describes one accelerator for the purpose of starting a job: how
+Ray should be told to advertise its devices, and the environment the job needs
+exported before ``ray start`` so the raylet and the actors it spawns inherit
+it. Both are read off the seams that already answer those questions for the
+running process, so adding an accelerator needs no entry here.
 
-Imports stay stdlib-only (torch imports are lazy) so the module is unit-testable in isolation;
-the actual `exec_command` calls live in `command_utils`.
+Imports stay stdlib-only at module level so this is unit-testable in
+isolation; the ``exec_command`` calls live in ``command_utils``.
 """
 
 import json
-import os
 import shlex
 from dataclasses import dataclass, field
-
-
-# ── Launch contract ──────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class Platform:
     name: str
     ray_args: str  # ray-start resource flags, "{n}"-templated with the device count
-    env: dict = field(default_factory=dict)  # device runtime env (into runtime_env + raylet)
+    env: dict = field(default_factory=dict)  # device env (into runtime_env + raylet)
 
     def ray_start_args(self, num_devices: int) -> str:
         return self.ray_args.format(n=num_devices)
 
 
-# ── NPU search paths (overridable; defaults match the reference NPU image) ────
+def launch_platform() -> Platform | None:
+    """Describe the selected accelerator, or ``None`` if it needs no override.
 
-_ASCEND_HOME_DEFAULT = "/usr/local/Ascend"
-_REPO_ROOT_DEFAULT = "/root"
-
-
-def _ascend_home() -> str:
-    return os.environ.get("ASCEND_HOME", _ASCEND_HOME_DEFAULT)
-
-
-def _toolkit_home() -> str:
-    return os.environ.get("ASCEND_TOOLKIT_HOME", f"{_ascend_home()}/ascend-toolkit/latest")
-
-
-def _npu_pythonpath() -> str:
-    """Megatron forks plus the CANN python bindings."""
-    if (configured := os.environ.get("VIME_NPU_PYTHONPATH")) is not None:
-        return configured
-    repos = os.environ.get("VIME_REPO_ROOT", _REPO_ROOT_DEFAULT)
-    toolkit = _toolkit_home()
-    return ":".join(
-        [
-            f"{repos}/Megatron-LM",
-            f"{repos}/vime",
-            f"{repos}/MegatronAdaptor",
-            f"{repos}/TransformerEngineNPU",
-            f"{toolkit}/python/site-packages",
-            f"{toolkit}/tools/ms_fmk_transplt/torch_npu_bridge",
-        ]
-    )
-
-
-def _npu_ld_library_path() -> str:
-    """Driver, toolkit, ATB and CANN runtime libraries."""
-    if (configured := os.environ.get("VIME_NPU_LD_LIBRARY_PATH")) is not None:
-        return configured
-    ascend = _ascend_home()
-    toolkit = _toolkit_home()
-    return ":".join(
-        [
-            f"{ascend}/driver/lib64",
-            f"{ascend}/driver/lib64/driver",
-            f"{ascend}/driver/lib64/common",
-            f"{toolkit}/lib64",
-            f"{toolkit}/compiler/lib64/plugin/opskernel",
-            f"{toolkit}/compiler/lib64/plugin/nnengine",
-            f"{toolkit}/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/",
-            f"{ascend}/nnal/atb/latest/atb/cxx_abi_1/lib",
-            f"{ascend}/cann/lib64",
-            f"{ascend}/cann/aarch64-linux/devlib",
-        ]
-    )
-
-
-# ── Registry ────────────────────────────────────────────────────────────────
-
-PLATFORMS: dict[str, Platform] = {}
-
-
-def register(platform: Platform) -> None:
-    PLATFORMS[platform.name] = platform
-
-
-# ── Registered platforms (add a new accelerator here) ─────────────────────────
-
-
-register(Platform(name="cuda", ray_args="--num-gpus {n}"))  # default; other fields unused for cuda
-
-register(
-    Platform(
-        name="npu",
-        # vime requests NPU bundles, not GPU (see ray/placement_group.py), so advertise
-        # the custom NPU resource rather than Ray GPU capacity.
-        ray_args="--num-gpus 0 --resources '{{\"NPU\": {n}}}'",
-        env={
-            "PYTHONPATH": _npu_pythonpath(),
-            "LD_LIBRARY_PATH": _npu_ld_library_path(),
-            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES": "1",
-            "HCCL_HOST_SOCKET_PORT_RANGE": "60000-60050",
-            "HCCL_NPU_SOCKET_PORT_RANGE": "61000-61050",
-            "HCCL_CONNECT_TIMEOUT": "7200",
-            "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False",
-            "VLLM_DISABLE_COMPILE_CACHE": "1",
-            "VLLM_ASCEND_ENABLE_NZ": "0",
-            "HYDRA_FULL_ERROR": "1",
-            "TRANSFORMERS_VERBOSITY": "error",  # silence transformers image-processing log spam
-        },
-    )
-)
-
-
-# ── Resolver + launcher (platform-agnostic; unchanged when adding a platform) ──
-
-
-def current_platform() -> Platform:
-    """Adapt the selected accelerator to the launch contract."""
+    A ``None`` result means the default launch path applies unchanged, which is
+    also what an accelerator with no launch environment of its own gets.
+    """
     from vime.utils import accelerator
+    from vime.utils.device_env import current as current_device_env
 
-    selected = accelerator.device_type()
-    try:
-        return PLATFORMS[selected]
-    except KeyError as exc:
-        raise ValueError(f"No launcher entry for accelerator {selected!r}") from exc
+    env = current_device_env().launch_env()
+    if not env:
+        return None
+
+    if accelerator.ray_uses_native_gpu_resource():
+        ray_args = "--num-gpus {n}"
+    else:
+        # Ray resolves a worker's visible-devices variable from the resource
+        # name, so the job has to advertise the same name the process asks for.
+        # Braces are doubled because ray_args is a format template.
+        ray_args = "--num-gpus 0 --resources '{{" + json.dumps(accelerator.ray_resource_name()) + ": {n}}}'"
+
+    return Platform(name=accelerator.device_type(), ray_args=ray_args, env=env)
 
 
 def launch_commands(
@@ -145,12 +61,7 @@ def launch_commands(
     external_ray: bool = False,
     master_addr: str = "127.0.0.1",
 ) -> list:
-    """Ordered shell commands to launch a training job on `platform` (pure; caller execs).
-
-    Driven entirely by platform data (ray resources + device env), so any non-CUDA platform
-    works with no change here. Lives outside `execute_train` so its CUDA body stays
-    byte-identical to upstream and only adds a one-line seam.
-    """
+    """Ordered shell commands to launch a training job on `platform` (pure; caller execs)."""
     extra_env = extra_env or {}
     all_env = {**platform.env, **extra_env}
     all_env["VIME_ACCELERATOR"] = platform.name

@@ -1,12 +1,19 @@
-"""Megatron bootstrap on Ascend."""
+"""Patches that have to be installed at a specific point during startup.
+
+Each function here is registered against one phase of the shared vendor-hook
+seam; the phase name says when it runs, not what it patches.
+"""
 
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 from typing import Any
 
 from vime.utils import accelerator
+
+logger = logging.getLogger(__name__)
 
 def _install_safe_empty_cache() -> None:
     """Keep the allocator guard MindSpeed and TMS callers rely on."""
@@ -44,7 +51,7 @@ def before_megatron_import() -> None:
     # MegatronAdaptor installs its pre-patches here; the attention override goes
     # on top of them.
     importlib.import_module("megatron_adaptor")
-    importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
+    importlib.import_module("vime_plugins.ascend.attention_patch")
 
 
 def after_megatron_args(args: Any) -> None:
@@ -58,5 +65,16 @@ def after_megatron_args(args: Any) -> None:
     features_manager.apply_features_patches(full_args)
     # Reapplying can replace attention again, and importing the cached module
     # does not reinstall the override on its own.
-    attention = importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
+    attention = importlib.import_module("vime_plugins.ascend.attention_patch")
     attention.DotProductAttention.forward = attention.npu_dot_product_attention_forward
+
+def relax_global_plan_validation(default_planner: Any) -> None:
+    """Skip the access-integrity check, which does not hold for Ascend shards."""
+    if not hasattr(default_planner, "_validate_global_plan"):
+        return
+
+    def _validate_global_plan(global_plan, metadata):
+        logger.info("Skipping validate_access_integrity")
+        return True
+
+    default_planner._validate_global_plan = _validate_global_plan

@@ -9,9 +9,9 @@ import pytest
 
 
 
-def _pin_ray_resource(monkeypatch, module, *, resource_name, native):
-    monkeypatch.setattr(module.resources.accelerator, "ray_resource_name", lambda: resource_name)
-    monkeypatch.setattr(module.resources.accelerator, "ray_uses_native_gpu_resource", lambda: native)
+def _pin_ray_resource(monkeypatch, resources_module, *, resource_name, native):
+    monkeypatch.setattr(resources_module.accelerator, "ray_resource_name", lambda: resource_name)
+    monkeypatch.setattr(resources_module.accelerator, "ray_uses_native_gpu_resource", lambda: native)
 
 
 @pytest.mark.parametrize(
@@ -21,7 +21,7 @@ def _pin_ray_resource(monkeypatch, module, *, resource_name, native):
         ("npu", "ASCEND_RT_VISIBLE_DEVICES", "9", "NPU"),
     ],
 )
-def test_platform_ray_accelerator_ids_and_local_mapping(
+def test_accelerator_ids_come_from_the_api_matching_the_resource(
     monkeypatch,
     platform_name,
     visible_env,
@@ -30,16 +30,18 @@ def test_platform_ray_accelerator_ids_and_local_mapping(
 ):
     import ray
 
-    platform = SimpleNamespace(ray=SimpleNamespace(resource_name=expected_resource))
+    from vime.ray import resources
+
+    _pin_ray_resource(monkeypatch, resources, resource_name=expected_resource, native=platform_name == "cuda")
     monkeypatch.setenv(visible_env, f"unused,{assigned_id}")
     if platform_name == "cuda":
         monkeypatch.setattr(ray, "get_gpu_ids", lambda: [assigned_id])
     else:
-        context = SimpleNamespace(get_accelerator_ids=lambda: {"NPU": [assigned_id]})
+        context = SimpleNamespace(get_accelerator_ids=lambda: {expected_resource: [assigned_id]})
         monkeypatch.setattr(ray, "get_runtime_context", lambda: context)
 
-    assert platform.ray.resource_name == expected_resource
-    assert platform.ray.accelerator_ids() == [assigned_id]
+    assert resources.resource_name() == expected_resource
+    assert resources.accelerator_ids() == [assigned_id]
 
 
 def _accelerator_backend(accelerator_module, platform_name):

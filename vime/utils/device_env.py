@@ -66,6 +66,13 @@ class DeviceEnv:
     def engine_actor_env(self, args: Any, env_vars: Mapping[str, str] | None = None) -> dict[str, str]:
         return dict(env_vars or {})
 
+    def launch_env(self) -> dict[str, str]:
+        """Environment a launched job needs exported before ``ray start``.
+
+        Empty means the default launch path applies unchanged.
+        """
+        return {}
+
     def serving_subprocess_env(
         self, base_env: Mapping[str, str], *, visible_devices: str, colocate: bool
     ) -> dict[str, str]:

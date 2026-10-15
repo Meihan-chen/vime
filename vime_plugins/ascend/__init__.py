@@ -10,10 +10,9 @@ from __future__ import annotations
 def register_all() -> None:
     from vime.utils import device_env, offload, vendor_hooks
 
-    from .checkpoint_patch import relax_global_plan_validation
     from .device_env import NpuDeviceEnv
-    from .megatron_bootstrap import after_megatron_args, before_megatron_import
     from .offload import NpuOffloadPolicy
+    from .patches import after_megatron_args, before_megatron_import, relax_global_plan_validation
 
     device_env.register("npu", NpuDeviceEnv())
     offload.register("npu", NpuOffloadPolicy())

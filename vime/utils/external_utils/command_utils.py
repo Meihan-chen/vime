@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vime.utils import accelerator
-from vime.utils.external_utils.launch import current_platform, launch_commands
+from vime.utils.external_utils.launch import launch_commands, launch_platform
 from vime.utils.external_utils.typer_utils import dataclass_cli
 from vime.utils.misc import exec_command
 
@@ -111,10 +111,8 @@ def execute_train(
     if config is None:
         config = ExecuteTrainConfig()
 
-    # Platform seam: non-CUDA delegates to the launcher; the CUDA path below stays
-    # byte-identical to upstream.
-    platform = current_platform()
-    if platform.name != "cuda":
+    platform = launch_platform()
+    if platform is not None:
         cmds = launch_commands(
             platform,
             train_args=train_args,
