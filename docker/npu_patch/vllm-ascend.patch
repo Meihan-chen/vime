@@ -336,6 +336,20 @@ index bcfd117ec..ef8b151de 100644
      out = out[..., :seqlen]
  
      if return_final_states:
+diff --git a/vllm_ascend/ops/gdn.py b/vllm_ascend/ops/gdn.py
+index 94eded278..4ca5d0ef9 100644
+--- a/vllm_ascend/ops/gdn.py
++++ b/vllm_ascend/ops/gdn.py
+@@ -114,6 +114,9 @@ def initialize_packed_conv_weight(layer: nn.Module) -> None:
+             ),
+         )
+
++    # Derived during post-load processing, not received from the checkpoint.
++    conv1d.get_parameter(_PACKED_CONV_WEIGHT_NAME).weight_loader_numel = 0
++
+     quant_method = getattr(conv1d, "quant_method", None)
+     if quant_method is None:
+         return
 diff --git a/vllm_ascend/ops/triton/v2/sample/sampling_mask.py b/vllm_ascend/ops/triton/v2/sample/sampling_mask.py
 index 75924c74f..122c41356 100644
 --- a/vllm_ascend/ops/triton/v2/sample/sampling_mask.py

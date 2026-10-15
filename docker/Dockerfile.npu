@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git cmake pkg-c
     git fetch --depth 1 origin ${VLLM_ROUTER_COMMIT} && git checkout FETCH_HEAD && \
     git apply --check /tmp/router-health-check.patch && \
     git apply /tmp/router-health-check.patch && \
-    python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir /wheels .
+    python3 -m pip wheel -v --no-deps --no-build-isolation --wheel-dir /wheels .
 
 FROM ${BASE_IMAGE}:${BASE_IMAGE_TAG}
 
