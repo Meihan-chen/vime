@@ -51,7 +51,7 @@ def cuda_offload_env_vars(env_vars: Mapping[str, str], library_dir: str | None =
 
 
 def offload_requested(args: Any) -> bool:
-    return bool(getattr(args, "offload_train", False)) and getattr(args, "train_backend", None) == "megatron"
+    return bool(getattr(args, "offload_train", False))
 
 
 class DeviceEnv:

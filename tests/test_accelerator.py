@@ -254,7 +254,17 @@ def test_an_unset_plugin_setting_uses_the_default(monkeypatch):
 
 
 @pytest.mark.unit
-def test_a_missing_support_package_does_not_break_selection(monkeypatch):
+def test_a_missing_support_package_stops_selection(monkeypatch):
+    # Continuing would run the chosen device under the default device's memory
+    # and environment policy, since that is what every seam falls back to.
     monkeypatch.setenv("VIME_PLUGINS", "not_installed_support_package")
 
-    accelerator._load_plugin("npu")
+    with pytest.raises(RuntimeError, match="not_installed_support_package"):
+        accelerator._load_plugin("npu")
+
+
+@pytest.mark.unit
+def test_an_empty_plugin_setting_is_how_to_opt_out(monkeypatch):
+    monkeypatch.setenv("VIME_PLUGINS", "")
+
+    assert accelerator._load_plugin("npu") is None

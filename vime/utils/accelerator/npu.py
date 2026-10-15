@@ -96,7 +96,10 @@ class NPUAccelerator(TorchAccelerator):
 
     def device_uuid(self, index: int | str | None = None) -> str:
         # The host-IP/physical-chip identifier vLLM Ascend derives, so a trainer
-        # and a receiver on the same host agree on the mapping.
+        # and a receiver on the same host agree on the mapping. It describes the
+        # calling process's own device, so there is nothing to answer for another.
+        if index is not None:
+            raise NotImplementedError("Ascend derives one identifier per calling process, not per device index")
         from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import npu_generate_uuid
 
         return npu_generate_uuid()

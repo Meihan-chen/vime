@@ -189,14 +189,24 @@ def _plugin_module(accelerator_name: str) -> str | None:
 
 
 def _load_plugin(accelerator_name: str) -> None:
+    """Register the chosen accelerator's behaviour, or fail saying why.
+
+    A missing package cannot be a warning: every seam falls back to the
+    behaviour the GPU path uses, so a backend that silently registers nothing
+    would run on its own device under another device's memory and environment
+    policy. Running without the package is only safe when it was asked for,
+    which ``VIME_PLUGINS`` is how to ask.
+    """
     module_path = _plugin_module(accelerator_name)
     if module_path is None:
         return
     try:
         module = importlib.import_module(module_path)
-    except ImportError:
-        logger.warning("Support package %s is unavailable; its behaviour is not registered", module_path)
-        return
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Accelerator {accelerator_name!r} needs support package {module_path}, which failed to import: {exc}. "
+            "Set VIME_PLUGINS empty to run with the accelerator API alone."
+        ) from exc
     module.register_all()
 
 
@@ -205,10 +215,14 @@ def _bootstrap_torch_npu_if_needed() -> bool:
     global _NPU_BOOTSTRAP_CHECKED
     if _NPU_BOOTSTRAP_CHECKED:
         return _NPU_RUNTIME_IMPORTED
-    _NPU_BOOTSTRAP_CHECKED = True
+    # Marked only once the whole sequence succeeds. Marking first would let a
+    # retry report the half-finished state as settled, and the vendor patches
+    # installed along the way cannot be undone within the process, so a failed
+    # attempt has to surface rather than be cached.
     imported = _try_import_torch_npu()
     if imported:
         _load_plugin("npu")
+    _NPU_BOOTSTRAP_CHECKED = True
     return imported
 
 
@@ -336,6 +350,31 @@ def reset_accelerator() -> None:
 
 def _backend() -> Accelerator:
     return get_accelerator()
+
+
+def _described_backend() -> Accelerator:
+    """The backend whose description applies, without requiring a usable device.
+
+    A driver that only builds scheduling requests needs the resource name, not
+    a working device, and may legitimately have none of its own. Resolution
+    order is the already selected backend, the requested one read for its
+    description alone, whatever this host can actually offer, and finally the
+    default the GPU path assumes.
+    """
+    if _ACCELERATOR is not None:
+        return _ACCELERATOR
+    _register_builtin_backends()
+    requested = _requested_name()
+    if requested is not None:
+        entry = _REGISTRY.get(requested)
+        if entry is None:
+            registered = ", ".join(sorted(_REGISTRY))
+            raise ValueError(f"Unknown accelerator {requested!r}; registered backends: {registered}")
+        return entry.factory()
+    selected = initialize_accelerator()
+    if selected is not None:
+        return selected
+    return CUDAAccelerator()
 
 
 def device_type() -> str:
@@ -498,11 +537,11 @@ def trainer_init_info(*, colocate: bool, **kwargs: Any) -> Any:
 
 
 def ray_resource_name() -> str:
-    return _backend().ray_resource_name
+    return _described_backend().ray_resource_name
 
 
 def ray_uses_native_gpu_resource() -> bool:
-    return _backend().ray_uses_native_gpu_resource
+    return _described_backend().ray_uses_native_gpu_resource
 
 
 def visible_devices_env_key() -> str:
