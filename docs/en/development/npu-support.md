@@ -1,7 +1,7 @@
-# NPU support: implementation and maintenance
+# Platform integration: ownership and NPU maintenance
 
 The implementation reuses PR #2 on main `4ad3486c` (M10). Its public workflows
-remain main's workflows. One complete support object supplies the environment,
+remain main's workflows. One `PlatformIntegration` supplies the environment,
 Megatron lifecycle/memory behavior, and vLLM weight transfer implementation.
 Hardware acceptance is the next step; CPU checks cannot establish NPU numerical
 correctness or communication reliability.
@@ -10,9 +10,9 @@ correctness or communication reliability.
 
 ```mermaid
 flowchart LR
-    A[Existing accelerator selection] --> B[Complete Support value]
+    A[Existing accelerator selection] --> B[Complete PlatformIntegration value]
     B --> C[Process environment]
-    B --> D[Megatron support]
+    B --> D[Megatron integration]
     B --> E[vLLM transfer]
     C --> F[Shared Ray and training workflow]
     D --> F
@@ -22,26 +22,64 @@ flowchart LR
 | Responsibility | Read this file first |
 |---|---|
 | Choose/describe a device; keep main's CUDA/MUSA/SUPA selection | `vime/utils/accelerator/__init__.py` |
-| Bind a support factory, validate and publish it once | `vime/utils/support.py` |
+| Bind a platform factory, validate and publish it once | `vime/utils/platform_integration.py` |
 | Construct the complete Ascend implementation | `vime_plugins/ascend/__init__.py` |
 | Prepare child process environment | `vime/utils/device_env.py`, `vime_plugins/ascend/device_env.py` |
-| Fixed training stages and offload | `vime/backends/megatron_support.py`, `vime_plugins/ascend/training.py` |
+| Fixed training stages and offload | `vime/backends/megatron_integration.py`, `vime_plugins/ascend/training.py` |
 | Choose transfer backend, trainer info and IPC identity | `vime/backends/vllm_weight_transfer.py`, `vime_plugins/ascend/weight_transfer.py` |
 | Own Ray reuse/start, callback and job submission | `vime/utils/external_utils/command_utils.py` |
 
 The separate env/offload/hook registries have been removed. Device selection
-keeps its existing registry. `Support` has three explicit components; adding a
+keeps its existing registry. `PlatformIntegration` has three explicit components; adding a
 platform does not add another public registry or launch algorithm. There is one
-default factory binding in `support.py`; custom platforms can use
+default factory binding in `platform_integration.py`; custom platforms can use
 `VIME_PLUGINS=module`. Factories must construct lightweight objects without
 installing runtime patches. They may explicitly choose existing defaults.
 Missing components or stale method signatures fail before publication.
 
-Support cannot switch after assembly. The resolved device and factory module
+The integration cannot switch after assembly. The resolved device and factory module
 are propagated to child processes; conflicting overrides fail. Successful
 Megatron bootstrap runs once. A partially failed vendor patch installation
 requires a new process because arbitrary third-party mutations cannot safely
 be rolled back.
+
+## Keep the boundary small
+
+`PlatformIntegration` is a platform composition layer. It does not replace
+`Accelerator`, select a second device, or provide another device API. The name
+replaces the draft's ambiguous `Support`; factories now expose
+`build_integration()`, and training uses `MegatronIntegration` with an
+`AscendMegatronIntegration` implementation. Out-of-tree factories using the
+previous draft API must update these names.
+
+Keep three decisions separate:
+
+| Decision | Owner |
+|---|---|
+| Which accelerator runs this job? | Existing `VIME_ACCELERATOR` selection. `export VIME_ACCELERATOR=npu` is sufficient to request NPU. |
+| Does this process need a local device now? | The caller: `initialize_accelerator(require_device=False)` prepares imports; actual device operations require a usable device. This rule also applies to newly registered backends. |
+| Does this job need HF-to-`torch_dist` conversion? | The job script. Calling `convert_checkpoint()` requests conversion on any platform; HF-only jobs omit that call. |
+
+There are no `imports_without_local_device` or `torch_dist_checkpoint_convert`
+hardware capabilities. CUDA, MUSA and SUPA device implementation files retain
+their M10 contents. Import preparation still runs the existing MUSA/SUPA runtime
+bootstrap. Deferring the local-device check does not suppress errors raised by
+a broken runtime or remove Megatron's vendor-library requirements.
+
+The integration factory resolves the three components once and binds the child
+environment to that selection. Consumers share the bound environment; they do
+not repeatedly construct wrappers or re-query a separate factory-module API.
+Ray workers may be remote or created by an already running raylet, so the
+resolved selection still travels through the existing runtime-environment
+mechanism. A shell export alone does not establish that propagation contract.
+
+For another platform, register its device implementation through the existing
+accelerator mechanism and provide the three integration components, explicitly
+reusing defaults where appropriate. `VIME_PLUGINS` chooses the integration
+module; it is not a replacement for registering a device backend. Individual
+vendor quirks belong inside these implementations, not in new global registries
+or hardware capability flags for job choices. The contract tests exercise an
+independent backend with custom Ray resources and no extra launch environment.
 
 ## s8 to s10: what was carried forward
 
@@ -80,9 +118,16 @@ that real function. Do not rely only on a conflict-free merge or source grep.
 
 For a new vendor base, update `docker/npu_patch/versions.json`, Docker source
 pins, and the corresponding patch together. Verify clean apply and exact
-reverse against pristine source. Runtime CI refuses a different base before
+reverse against pristine source. The NPU CI update script refuses a different base before
 reverting its old patches. The source identity checks cover the framework and
 vendor source pins, not byte-for-byte reproducibility of all downloaded tools.
+
+`tools/check_npu_stack.py` is build/update tooling, not a prerequisite for NPU
+execution and not an integration interface. It only compares Git HEADs with the
+recorded source commits; it does not verify installed packages, patch contents
+or hardware compatibility. The NPU Megatron pin remains `1dcf0dafa884ad52ffb243625717a3471643e087`
+in N8, N10 and this implementation. The M10 GPU image uses `4b4acac9a1d28ea6829c8d4f566d75698a21249d`;
+the NPU integration does not upgrade to that GPU pin.
 
 Current GPU defaults include CUDA TMS library search order and all three TMS
 environment variables. MUSA/SUPA use their pre-existing main defaults explicitly;

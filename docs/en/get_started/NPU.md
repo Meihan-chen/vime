@@ -74,7 +74,7 @@ processes.
 |---|---|
 | `VIME_ACCELERATOR=npu` | Selects NPU. Metadata queries work without a local device; execution requires a visible NPU and runtime. |
 | `VIME_PLUGINS` unset | Builds complete Ascend support. GPU defaults remain explicit defaults. |
-| `VIME_PLUGINS=your.module` | Calls that module's `build_support()` once; it must return every required component. |
+| `VIME_PLUGINS=your.module` | Calls that module's `build_integration()` once; it must return every required component. |
 | `VIME_PLUGINS=` | Allows standalone device APIs. NPU training/serving fails because complete support is missing. |
 | `VIME_NPU_PYTHONPATH`, `VIME_NPU_LD_LIBRARY_PATH` | Override the image-layout defaults for launch paths. |
 | Buffer CPU backup | NPU offload keeps the full training region backed up. Main's automatic per-buffer backup suppression is enabled only where supported. Explicit `disable_param_buffers_cpu_backup=True` or `disable_grad_buffers_cpu_backup=True` configuration is rejected on this NPU pin. |
@@ -85,6 +85,7 @@ load backend definitions. Loading Megatron backend definitions still requires
 the matching vendor libraries, even when the driver itself has no NPU.
 
 For checkpoint correctness, keep validation enabled and verify a save/load
-round trip, optimizer state, and the next training step. Native HF loading
-remains the default NPU path; the large-model test scripts explicitly exercise
-HF-to-distributed conversion as an additional case.
+round trip, optimizer state, and the next training step. Choose HF loading or
+HF-to-distributed conversion in the job script. `convert_checkpoint()` performs
+the requested conversion on NPU as on other platforms; an HF-only job should
+not call it. The large-model test scripts exercise both loading paths.
