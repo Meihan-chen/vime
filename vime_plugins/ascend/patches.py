@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 from typing import Any
 
 from vime.utils import accelerator
@@ -15,22 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 def _install_safe_empty_cache() -> None:
-    """Keep the allocator guard MindSpeed and TMS callers rely on."""
+    """Route vendor CUDA cache calls to NPU without hiding allocator failures."""
     torch = importlib.import_module("torch")
-    original_empty_cache = torch.npu.empty_cache
-    if not getattr(original_empty_cache, "_vime_safe_empty_cache", False):
-
-        def _safe_empty_cache(_original=original_empty_cache) -> None:
-            try:
-                _original()
-            except RuntimeError:
-                pass
-
-        _safe_empty_cache._vime_safe_empty_cache = True
-        torch.npu.empty_cache = _safe_empty_cache
-
-    # Some shared dependencies still call the CUDA spelling after torch_npu's
-    # compatibility patching. Scope that alias to NPU-bootstrapped jobs.
+    # The alias is required by vendor callers. Preserve all allocator/device
+    # errors: there is no demonstrated safe exception that can be swallowed.
     torch.cuda.empty_cache = torch.npu.empty_cache
 
 
@@ -63,12 +52,18 @@ def after_megatron_args(args: Any) -> None:
 
 
 def relax_global_plan_validation(default_planner: Any) -> None:
-    """Skip the access-integrity check, which does not hold for Ascend shards."""
-    if not hasattr(default_planner, "_validate_global_plan"):
+    """Explicit legacy workaround; validation stays enabled by default.
+
+    This escape hatch is only for diagnosing the pinned Ascend sharding issue.
+    It is never enabled by the image or normal launcher.
+    """
+    if os.environ.get("VIME_NPU_SKIP_CHECKPOINT_VALIDATION", "0") != "1":
         return
+    if not callable(getattr(default_planner, "_validate_global_plan", None)):
+        raise RuntimeError("Ascend checkpoint workaround target _validate_global_plan is missing")
+    logger.warning("VIME_NPU_SKIP_CHECKPOINT_VALIDATION=1 disables checkpoint shard integrity validation")
 
     def _validate_global_plan(global_plan, metadata):
-        logger.info("Skipping validate_access_integrity")
         return True
 
     default_planner._validate_global_plan = _validate_global_plan

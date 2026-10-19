@@ -66,7 +66,7 @@ def npu_dot_product_attention_forward(
         scale=scale,
         pre_tockens=pre_tockens,
         next_tockens=next_tockens,
-        keep_prob=1 - self.attention_dropout.p,
+        keep_prob=1 - self.attention_dropout.p if self.training else 1.0,
         inner_precise=0,
         sparse_mode=sparse_mode,
         actual_seq_qlen=actual_seq_qlen,

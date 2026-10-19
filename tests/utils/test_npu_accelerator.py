@@ -95,7 +95,7 @@ def test_an_unknown_explicit_request_names_what_is_registered(monkeypatch):
 
 
 @pytest.mark.unit
-def test_safe_empty_cache_wraps_the_original_once(monkeypatch):
+def test_empty_cache_alias_preserves_allocator_errors(monkeypatch):
     calls = []
 
     def original_empty_cache():
@@ -110,7 +110,8 @@ def test_safe_empty_cache_wraps_the_original_once(monkeypatch):
 
     patches._install_safe_empty_cache()
     wrapped = fake_torch.npu.empty_cache
-    wrapped()
+    with pytest.raises(RuntimeError, match="between offload states"):
+        wrapped()
     patches._install_safe_empty_cache()
 
     assert calls == ["original"]
