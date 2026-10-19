@@ -77,7 +77,7 @@ class MUSAAccelerator(TorchAccelerator):
     def supports(self, capability: str) -> bool:
         if capability in {"nvml_affinity", "vllm_fp8_utils", "strict_fp32_logits"}:
             return False
-        if capability == "requires_cpu_initialization":
+        if capability in {"requires_cpu_initialization", "torch_dist_checkpoint_convert"}:
             return True
         if capability == "amp":
             amp = getattr(self._module(), "amp", None)

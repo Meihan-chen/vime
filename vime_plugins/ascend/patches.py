@@ -1,19 +1,18 @@
 """Patches that have to be installed at a specific point during startup.
 
-Each function here is registered against one phase of the shared vendor-hook
-seam; the phase name says when it runs, not what it patches.
+NpuMegatronSupport calls these functions at fixed Megatron lifecycle stages.
 """
 
 from __future__ import annotations
 
 import importlib
 import logging
-import sys
 from typing import Any
 
 from vime.utils import accelerator
 
 logger = logging.getLogger(__name__)
+
 
 def _install_safe_empty_cache() -> None:
     """Keep the allocator guard MindSpeed and TMS callers rely on."""
@@ -36,22 +35,16 @@ def _install_safe_empty_cache() -> None:
 
 
 def before_megatron_import() -> None:
-    # MegatronAdaptor refuses to install its patches twice, and this module can
-    # be re-imported within one process (a test that resets sys.modules, for
-    # instance), so the guard has to live where the patches do rather than in a
-    # module-level flag here.
-    if "megatron_adaptor" in sys.modules:
-        return
-
     importlib.import_module("torch_npu")
-    selected = accelerator.get_accelerator()
+    selected = accelerator.describe_accelerator()
     if selected.name != "npu":
         raise RuntimeError(f"NPU bootstrap cannot use an already selected {selected.name!r} accelerator")
     _install_safe_empty_cache()
     # MegatronAdaptor installs its pre-patches here; the attention override goes
     # on top of them.
     importlib.import_module("megatron_adaptor")
-    importlib.import_module("vime_plugins.ascend.attention_patch")
+    attention = importlib.import_module("vime_plugins.ascend.attention_patch")
+    attention.DotProductAttention.forward = attention.npu_dot_product_attention_forward
 
 
 def after_megatron_args(args: Any) -> None:
@@ -67,6 +60,7 @@ def after_megatron_args(args: Any) -> None:
     # does not reinstall the override on its own.
     attention = importlib.import_module("vime_plugins.ascend.attention_patch")
     attention.DotProductAttention.forward = attention.npu_dot_product_attention_forward
+
 
 def relax_global_plan_validation(default_planner: Any) -> None:
     """Skip the access-integrity check, which does not hold for Ascend shards."""

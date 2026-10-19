@@ -1,5 +1,3 @@
-import sys
-import types
 from types import SimpleNamespace
 
 import pytest
@@ -57,39 +55,39 @@ def reset_accelerator_selection(monkeypatch):
     selected = accelerator._ACCELERATOR
     patch_imported = accelerator._MUSA_PATCH_IMPORTED
     bootstrap_checked = accelerator._MUSA_BOOTSTRAP_CHECKED
-    npu_imported = accelerator._NPU_RUNTIME_IMPORTED
-    npu_bootstrap_checked = accelerator._NPU_BOOTSTRAP_CHECKED
     supa_imported = accelerator._SUPA_RUNTIME_IMPORTED
     supa_bootstrap_checked = accelerator._SUPA_BOOTSTRAP_CHECKED
+    npu_imported = accelerator._NPU_RUNTIME_IMPORTED
+    npu_bootstrap_checked = accelerator._NPU_BOOTSTRAP_CHECKED
     for name in (
         "VIME_ACCELERATOR",
         "MUSA_VISIBLE_DEVICES",
         "MUSA_PATCH_PATH",
         "CUDA_VISIBLE_DEVICES",
-        "ASCEND_RT_VISIBLE_DEVICES",
-        "ASCEND_HOME_PATH",
         "SUPA_VISIBLE_DEVICES",
         "BIREN_HOME",
+        "ASCEND_RT_VISIBLE_DEVICES",
+        "ASCEND_HOME_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
     accelerator._REGISTRY.clear()
     accelerator.reset_accelerator()
     accelerator._MUSA_PATCH_IMPORTED = False
     accelerator._MUSA_BOOTSTRAP_CHECKED = False
-    accelerator._NPU_RUNTIME_IMPORTED = False
-    accelerator._NPU_BOOTSTRAP_CHECKED = False
     accelerator._SUPA_RUNTIME_IMPORTED = False
     accelerator._SUPA_BOOTSTRAP_CHECKED = False
+    accelerator._NPU_RUNTIME_IMPORTED = False
+    accelerator._NPU_BOOTSTRAP_CHECKED = False
     yield
     accelerator._REGISTRY.clear()
     accelerator._REGISTRY.update(registry)
     accelerator._ACCELERATOR = selected
     accelerator._MUSA_PATCH_IMPORTED = patch_imported
     accelerator._MUSA_BOOTSTRAP_CHECKED = bootstrap_checked
-    accelerator._NPU_RUNTIME_IMPORTED = npu_imported
-    accelerator._NPU_BOOTSTRAP_CHECKED = npu_bootstrap_checked
     accelerator._SUPA_RUNTIME_IMPORTED = supa_imported
     accelerator._SUPA_BOOTSTRAP_CHECKED = supa_bootstrap_checked
+    accelerator._NPU_RUNTIME_IMPORTED = npu_imported
+    accelerator._NPU_BOOTSTRAP_CHECKED = npu_bootstrap_checked
 
 
 @pytest.mark.unit
@@ -131,8 +129,8 @@ def test_selected_musa_bootstraps_patch_once(monkeypatch):
 @pytest.mark.unit
 def test_cpu_only_initialization_does_not_require_an_accelerator(monkeypatch):
     monkeypatch.setattr(accelerator, "is_musa_available", lambda: False)
-    monkeypatch.setattr(accelerator, "is_npu_available", lambda: False)
     monkeypatch.setattr(accelerator, "is_supa_available", lambda: False)
+    monkeypatch.setattr(accelerator, "is_npu_available", lambda: False)
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: False)
 
     assert accelerator.initialize_accelerator() is None
@@ -171,8 +169,8 @@ def test_registered_backend_can_be_selected(monkeypatch):
         name = "registered"
 
     monkeypatch.setattr(accelerator, "is_musa_available", lambda: False)
-    monkeypatch.setattr(accelerator, "is_npu_available", lambda: False)
     monkeypatch.setattr(accelerator, "is_supa_available", lambda: False)
+    monkeypatch.setattr(accelerator, "is_npu_available", lambda: False)
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: False)
     accelerator.register_accelerator("registered", RegisteredAccelerator, lambda: True, priority=300)
 
@@ -293,53 +291,3 @@ def test_supa_availability_handles_missing_torch_namespace(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
-
-
-@pytest.mark.unit
-def test_selecting_an_accelerator_loads_its_support_package(monkeypatch):
-    loaded = []
-    module = types.ModuleType("fake_support_package")
-    module.register_all = lambda: loaded.append("registered")
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    monkeypatch.setenv("VIME_PLUGINS", module.__name__)
-
-    accelerator._load_plugin("npu")
-
-    assert loaded == ["registered"]
-
-
-@pytest.mark.unit
-def test_an_empty_plugin_setting_registers_nothing(monkeypatch):
-    monkeypatch.setenv("VIME_PLUGINS", "")
-
-    def fail(name):
-        raise AssertionError(f"nothing should be imported: {name}")
-
-    monkeypatch.setattr(accelerator.importlib, "import_module", fail)
-
-    accelerator._load_plugin("npu")
-
-
-@pytest.mark.unit
-def test_an_unset_plugin_setting_uses_the_default(monkeypatch):
-    monkeypatch.delenv("VIME_PLUGINS", raising=False)
-
-    assert accelerator._plugin_module("npu") == "vime_plugins.ascend"
-    assert accelerator._plugin_module("cuda") is None
-
-
-@pytest.mark.unit
-def test_a_missing_support_package_stops_selection(monkeypatch):
-    # Continuing would run the chosen device under the default device's memory
-    # and environment policy, since that is what every seam falls back to.
-    monkeypatch.setenv("VIME_PLUGINS", "not_installed_support_package")
-
-    with pytest.raises(RuntimeError, match="not_installed_support_package"):
-        accelerator._load_plugin("npu")
-
-
-@pytest.mark.unit
-def test_an_empty_plugin_setting_is_how_to_opt_out(monkeypatch):
-    monkeypatch.setenv("VIME_PLUGINS", "")
-
-    assert accelerator._load_plugin("npu") is None

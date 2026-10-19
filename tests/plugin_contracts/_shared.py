@@ -37,14 +37,7 @@ def _should_stub(name: str) -> bool:
 
 
 def install_stubs(*, with_vllm_router: bool = False, with_transformers: bool = False) -> None:
-    if _should_stub("ray"):
-        ray_mod = types.ModuleType("ray")
-        ray_mod._private = types.SimpleNamespace(
-            services=types.SimpleNamespace(get_node_ip_address=lambda: "127.0.0.1")
-        )
-        sys.modules["ray"] = ray_mod
-
-    if with_vllm_router and _should_stub("vllm_router"):
+    if with_vllm_router and "vllm_router" not in sys.modules:
         mod = types.ModuleType("vllm_router")
         sys.modules["vllm_router"] = mod
 

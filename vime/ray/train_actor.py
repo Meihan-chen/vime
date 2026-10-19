@@ -10,8 +10,8 @@ import torch.distributed as dist
 
 import vime.utils.eval_config
 from vime.observability.logging_utils import configure_logger
-from vime.ray.ray_actor import RayActor
 from vime.ray import resources
+from vime.ray.ray_actor import RayActor
 from vime.utils import accelerator
 from vime.utils.distributed_utils import init_gloo_group
 from vime.utils.memory_utils import clear_memory, print_memory

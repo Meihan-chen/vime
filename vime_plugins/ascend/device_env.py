@@ -125,6 +125,9 @@ class NpuDeviceEnv(DeviceEnv):
             "TRANSFORMERS_VERBOSITY": "error",
         }
 
+    def launch_job_env(self) -> dict[str, str]:
+        return {"RAY_USE_UVLOOP": "0", **self.launch_env()}
+
     def serving_subprocess_env(
         self, base_env: Mapping[str, str], *, visible_devices: str, colocate: bool
     ) -> dict[str, str]:

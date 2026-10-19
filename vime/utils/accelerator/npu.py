@@ -25,7 +25,9 @@ def has_visible_device() -> bool:
     Checked before anything would import ``torch_npu``, so a host that merely
     has it installed does not get the NPU backend selected for it.
     """
-    return os.path.exists("/dev/davinci_manager") or bool(glob("/dev/davinci[0-9]*"))
+    if os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "all").strip() in {"", "-1"}:
+        return False
+    return bool(glob("/dev/davinci[0-9]*"))
 
 
 def is_npu_available() -> bool:
@@ -77,34 +79,9 @@ class NPUAccelerator(TorchAccelerator):
         # Allocator policy is carried by the TMS and runtime-env hooks instead.
         return False
 
-    def weight_transfer_backend(self, transport: str) -> str:
-        return {"ipc": "npu_ipc", "nccl": "hccl"}.get(transport, transport)
-
-    def trainer_init_info(self, *, colocate: bool, **kwargs: Any) -> Any:
-        import torch_npu  # noqa: F401
-        from vllm.plugins import load_general_plugins
-
-        # A trainer, unlike a vLLM worker, has not loaded the general plugins.
-        load_general_plugins()
-        if colocate:
-            from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import NPUIPCTrainerInitInfo
-
-            return NPUIPCTrainerInitInfo(**kwargs)
-        from vllm_ascend.distributed.weight_transfer.hccl_engine import HCCLTrainerInitInfo
-
-        return HCCLTrainerInitInfo(**kwargs)
-
-    def device_uuid(self, index: int | str | None = None) -> str:
-        # The host-IP/physical-chip identifier vLLM Ascend derives, so a trainer
-        # and a receiver on the same host agree on the mapping. It describes the
-        # calling process's own device, so there is nothing to answer for another.
-        if index is not None:
-            raise NotImplementedError("Ascend derives one identifier per calling process, not per device index")
-        from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import npu_generate_uuid
-
-        return npu_generate_uuid()
-
     def supports(self, capability: str) -> bool:
+        if capability == "imports_without_local_device":
+            return True
         if capability in {
             "cuda_int4_extension",
             "nvml_affinity",

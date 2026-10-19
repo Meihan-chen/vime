@@ -58,18 +58,18 @@ def test_helper_does_not_mutate_the_caller_mapping(tmp_path):
 
 @pytest.mark.unit
 def test_default_policy_allows_suspending_an_allocated_region():
-    from vime.utils.offload import OffloadPolicy
+    from vime.backends.megatron_support import MegatronSupport
 
-    assert OffloadPolicy().supports_disable is True
+    assert MegatronSupport().supports_disable is True
 
 
 @pytest.mark.unit
 def test_ascend_policy_refuses_to_suspend_an_allocated_region():
     # A subclass must be able to say no here; if the base class ever becomes a
     # dataclass again, the field default silently wins over this override.
-    from vime_plugins.ascend.offload import NpuOffloadPolicy
+    from vime_plugins.ascend.training import NpuMegatronSupport
 
-    assert NpuOffloadPolicy().supports_disable is False
+    assert NpuMegatronSupport().supports_disable is False
 
 
 @pytest.mark.unit

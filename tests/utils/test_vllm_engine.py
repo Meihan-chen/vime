@@ -14,11 +14,11 @@ if str(_tests_root) not in sys.path:
 
 import _unit_stubs
 import pytest
-
-from vime.utils.accelerator.base import Accelerator
-from vime.utils.accelerator.npu import NPUAccelerator
 import requests
 import torch
+
+from vime.backends.vllm_weight_transfer import WeightTransfer
+from vime_plugins.ascend.weight_transfer import NpuWeightTransfer
 
 _unit_stubs.install_vllm_cli_stubs()
 
@@ -96,10 +96,8 @@ class _MockResponse:
         return self._json_data
 
 
-
 def _backend_for(platform_name):
-    accelerator_cls = Accelerator if platform_name == "cuda" else NPUAccelerator
-    return lambda transport: accelerator_cls.weight_transfer_backend(None, transport)
+    return WeightTransfer if platform_name == "cuda" else NpuWeightTransfer
 
 
 @pytest.mark.unit
@@ -360,7 +358,7 @@ def test_compute_server_args_model_path_override_wins(vllm_args, monkeypatch):
 @pytest.mark.unit
 def test_compute_server_args_external_check_fields_skip_orchestration_fields(vllm_args, monkeypatch):
     # The backend assertion below is CUDA's, so do not read the ambient platform.
-    monkeypatch.setattr(mod.accelerator, "weight_transfer_backend", _backend_for("cuda"))
+    monkeypatch.setattr(mod, "current_weight_transfer", _backend_for("cuda"))
 
     sa, check_fields = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
     assert "model" not in check_fields
@@ -459,7 +457,7 @@ def test_compute_server_args_uses_native_platform_backend(vllm_args, monkeypatch
     monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
     vllm_args.vllm_worker_extension_cls = ""
     vllm_args.colocate = colocate
-    monkeypatch.setattr(mod.accelerator, "weight_transfer_backend", _backend_for(platform_name))
+    monkeypatch.setattr(mod, "current_weight_transfer", _backend_for(platform_name))
 
     sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
 
@@ -471,7 +469,7 @@ def test_compute_server_args_uses_native_platform_backend(vllm_args, monkeypatch
 def test_compute_server_args_keeps_user_worker_extension(vllm_args, monkeypatch):
     monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
     vllm_args.vllm_worker_extension_cls = "example.UserWorkerExtension"
-    monkeypatch.setattr(mod.accelerator, "weight_transfer_backend", _backend_for("npu"))
+    monkeypatch.setattr(mod, "current_weight_transfer", _backend_for("npu"))
 
     sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
 

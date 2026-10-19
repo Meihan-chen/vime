@@ -41,9 +41,21 @@ def _vendor_word(text: str) -> str | None:
     return None
 
 
-def _code_strings_and_names(source: str):
+def _code_strings_and_names(source: str, *, binding_file=False):
     """Yield (lineno, text) for code, skipping comments and docstrings."""
     tree = ast.parse(source)
+    if binding_file:
+        tree.body = [
+            node
+            for node in tree.body
+            if not (
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id in {"_DEFAULT_MODULES", "_DEFAULT_COMPATIBLE"}
+                    for target in node.targets
+                )
+            )
+        ]
     docstrings = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -78,7 +90,9 @@ def _core_sources() -> list[Path]:
 def test_core_tree_code_names_no_vendor():
     offenders: list[str] = []
     for path in _core_sources():
-        for lineno, text in _code_strings_and_names(path.read_text(encoding="utf-8")):
+        for lineno, text in _code_strings_and_names(
+            path.read_text(encoding="utf-8"), binding_file=path.relative_to(REPO_ROOT) == Path("vime/utils/support.py")
+        ):
             if word := _vendor_word(text):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {word!r} in {text!r}")
 

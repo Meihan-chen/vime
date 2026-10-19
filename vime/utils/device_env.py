@@ -13,7 +13,6 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from vime.utils import accelerator
 
 _TMS_PRELOAD_LIBRARIES = (
     "torch_memory_saver_hook_mode_preload_cu13.abi3.so",
@@ -69,9 +68,20 @@ class DeviceEnv:
     def launch_env(self) -> dict[str, str]:
         """Environment a launched job needs exported before ``ray start``.
 
-        Empty means the default launch path applies unchanged.
+        Resource selection is independent of whether this mapping is empty.
         """
         return {}
+
+    def launch_job_env(self) -> dict[str, str]:
+        from vime.utils.external_utils.command_utils import check_has_nvlink
+
+        nvls = os.environ.get("NCCL_NVLS_ENABLE")
+        return {
+            "PYTHONPATH": "/root/Megatron-LM/",
+            "RAY_USE_UVLOOP": "0",
+            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+            "NCCL_NVLS_ENABLE": nvls if nvls is not None else str(int(check_has_nvlink())),
+        }
 
     def serving_subprocess_env(
         self, base_env: Mapping[str, str], *, visible_devices: str, colocate: bool
@@ -79,13 +89,40 @@ class DeviceEnv:
         return dict(base_env)
 
 
-_REGISTRY: dict[str, DeviceEnv] = {}
-_DEFAULT = DeviceEnv()
+class _SelectedDeviceEnv(DeviceEnv):
+    def __init__(self, policy: DeviceEnv, name: str, module: str):
+        self.policy, self.name, self.module = policy, name, module
 
+    def _pin(self, env: Mapping[str, str]) -> dict[str, str]:
+        result = dict(env)
+        required = {"VIME_ACCELERATOR": self.name, "VIME_PLUGINS": self.module}
+        for key, value in required.items():
+            if key in result and result[key] != value:
+                raise ValueError(f"Child {key} must match the selected accelerator support")
+            result[key] = value
+        return result
 
-def register(accelerator_name: str, device_env: DeviceEnv) -> None:
-    _REGISTRY[accelerator_name.lower()] = device_env
+    def train_actor_env(self, args, env_vars=None):
+        return self._pin(self.policy.train_actor_env(args, env_vars))
+
+    def engine_actor_env(self, args, env_vars=None):
+        return self._pin(self.policy.engine_actor_env(args, env_vars))
+
+    def launch_env(self):
+        return self._pin(self.policy.launch_env())
+
+    def launch_job_env(self):
+        return self._pin(self.policy.launch_job_env())
+
+    def serving_subprocess_env(self, base_env, *, visible_devices, colocate):
+        return self._pin(
+            self.policy.serving_subprocess_env(base_env, visible_devices=visible_devices, colocate=colocate)
+        )
 
 
 def current() -> DeviceEnv:
-    return _REGISTRY.get(accelerator.device_type(), _DEFAULT)
+    from vime.utils import accelerator
+    from vime.utils.support import current_support, current_support_module
+
+    support = current_support()
+    return _SelectedDeviceEnv(support.env, accelerator.describe_accelerator().name, current_support_module())

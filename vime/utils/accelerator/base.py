@@ -104,10 +104,6 @@ class Accelerator(abc.ABC):
         """Attach an OOM callback; return ``False`` when unsupported."""
         return False
 
-    def device_uuid(self, index: int | str | None = None) -> str:
-        """Return a stable identifier for one device, unique within the host."""
-        raise NotImplementedError(f"Accelerator {self.name!r} does not expose device UUIDs")
-
     def supports(self, capability: str) -> bool:
         """Return whether a named optional capability is implemented."""
         return False
@@ -155,25 +151,6 @@ class Accelerator(abc.ABC):
 
     ray_uses_native_gpu_resource = True
     """Whether that name is Ray's own GPU resource rather than a custom one."""
-
-    def weight_transfer_backend(self, transport: str) -> str:
-        """Map a transport name onto the engine that implements it here."""
-        return transport
-
-    def trainer_init_info(self, *, colocate: bool, **kwargs: Any) -> Any:
-        """Build the init info the mapped engine expects.
-
-        The engine is selected from ``TrainerInitInfo.backend``, a class
-        attribute, so choosing the type and choosing the transport name above
-        are two halves of one decision.
-        """
-        if colocate:
-            from vllm.distributed.weight_transfer.ipc_engine import IPCTrainerInitInfo
-
-            return IPCTrainerInitInfo(**kwargs)
-        from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerInitInfo
-
-        return NCCLTrainerInitInfo(**kwargs)
 
     @property
     def visible_devices_env(self) -> str:

@@ -12,7 +12,7 @@ from vime_plugins.ascend import patches
 
 @pytest.fixture(autouse=True)
 def npu_runtime(monkeypatch):
-    monkeypatch.delenv("VIME_ACCELERATOR", raising=False)
+    monkeypatch.setenv("VIME_ACCELERATOR", "npu")
     monkeypatch.delenv("MUSA_VISIBLE_DEVICES", raising=False)
     monkeypatch.delenv("MUSA_PATCH_PATH", raising=False)
     monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0")
@@ -21,6 +21,9 @@ def npu_runtime(monkeypatch):
     monkeypatch.setattr(accelerator, "_NPU_BOOTSTRAP_CHECKED", True)
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: False)
     monkeypatch.setattr(accelerator, "is_musa_available", lambda: False)
+    monkeypatch.setattr(accelerator, "is_supa_available", lambda: False)
+    monkeypatch.setattr(accelerator, "_has_npu_device", lambda: True)
+    monkeypatch.setattr("vime.utils.accelerator.npu.has_visible_device", lambda: True)
     calls = []
     fake_npu = SimpleNamespace(
         is_available=lambda: True,
@@ -36,8 +39,8 @@ def npu_runtime(monkeypatch):
 
 
 @pytest.mark.unit
-def test_npu_wins_auto_selection_over_an_available_cuda(monkeypatch, npu_runtime):
-    # MindSpeed may also make CUDA's availability probe return true.
+def test_explicit_npu_preserves_the_runtime_surface(monkeypatch, npu_runtime):
+    # Explicit selection stays NPU even when a vendor library aliases CUDA.
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: True)
 
     assert isinstance(accelerator.initialize_accelerator(), NPUAccelerator)
@@ -68,8 +71,7 @@ def test_npu_allocator_remains_owned_by_existing_runtime_hooks(monkeypatch):
 def test_npu_is_not_selected_without_a_visible_device(monkeypatch):
     from vime.utils.accelerator import npu as npu_backend
 
-    monkeypatch.setattr(npu_backend.os.path, "exists", lambda path: False)
-    monkeypatch.setattr(npu_backend, "glob", lambda pattern: [])
+    monkeypatch.setattr(npu_backend, "has_visible_device", lambda: False)
 
     assert npu_backend.has_visible_device() is False
     assert npu_backend.is_npu_available() is False
@@ -104,9 +106,7 @@ def test_safe_empty_cache_wraps_the_original_once(monkeypatch):
         npu=SimpleNamespace(empty_cache=original_empty_cache),
         cuda=SimpleNamespace(empty_cache=lambda: None),
     )
-    monkeypatch.setattr(
-        patches.importlib, "import_module", lambda name: fake_torch if name == "torch" else None
-    )
+    monkeypatch.setattr(patches.importlib, "import_module", lambda name: fake_torch if name == "torch" else None)
 
     patches._install_safe_empty_cache()
     wrapped = fake_torch.npu.empty_cache
@@ -121,8 +121,8 @@ def test_safe_empty_cache_wraps_the_original_once(monkeypatch):
 @pytest.mark.unit
 def test_bootstrap_selects_npu_before_adaptor_and_attention(monkeypatch):
     events = []
-    monkeypatch.setitem(patches.sys.modules, "torch_npu", SimpleNamespace())
-    monkeypatch.delitem(patches.sys.modules, "megatron_adaptor", raising=False)
+    monkeypatch.setitem(__import__("sys").modules, "torch_npu", SimpleNamespace())
+    monkeypatch.delitem(__import__("sys").modules, "megatron_adaptor", raising=False)
     monkeypatch.setattr(patches, "_install_safe_empty_cache", lambda: events.append("empty_cache_guard"))
     original_import = patches.importlib.import_module
 
@@ -130,7 +130,7 @@ def test_bootstrap_selects_npu_before_adaptor_and_attention(monkeypatch):
         if name in {"megatron_adaptor", "vime_plugins.ascend.attention_patch"}:
             assert accelerator.get_accelerator().name == "npu"
             events.append(name)
-            return SimpleNamespace()
+            return SimpleNamespace(DotProductAttention=SimpleNamespace(), npu_dot_product_attention_forward=object())
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(patches.importlib, "import_module", import_module)
@@ -145,23 +145,35 @@ def test_bootstrap_selects_npu_before_adaptor_and_attention(monkeypatch):
 
 
 @pytest.mark.unit
-def test_bootstrap_is_skipped_once_the_patches_are_installed(monkeypatch):
-    monkeypatch.setitem(patches.sys.modules, "megatron_adaptor", SimpleNamespace())
+def test_support_runs_bootstrap_once_and_rejects_partial_retry(monkeypatch):
+    from vime_plugins.ascend.training import NpuMegatronSupport
 
-    def fail(*args, **kwargs):
-        raise AssertionError("the vendor patches must not be installed twice")
+    calls = []
+    monkeypatch.setattr(patches, "before_megatron_import", lambda: calls.append("install"))
+    support = NpuMegatronSupport()
+    support.before_import()
+    support.before_import()
+    assert calls == ["install"]
 
-    monkeypatch.setattr(patches.importlib, "import_module", fail)
+    def partial_failure():
+        calls.append("partial")
+        raise RuntimeError("partial patch")
 
-    patches.before_megatron_import()
+    monkeypatch.setattr(patches, "before_megatron_import", partial_failure)
+    failed = NpuMegatronSupport()
+    with pytest.raises(RuntimeError, match="partial patch"):
+        failed.before_import()
+    with pytest.raises(RuntimeError, match="restart"):
+        failed.before_import()
+    assert calls == ["install", "partial"]
 
 
 @pytest.mark.unit
 def test_bootstrap_rejects_preselected_cuda_without_replacing_it(monkeypatch):
     selected = accelerator.CUDAAccelerator()
     monkeypatch.setattr(accelerator, "_ACCELERATOR", selected)
-    monkeypatch.setitem(patches.sys.modules, "torch_npu", SimpleNamespace())
-    monkeypatch.delitem(patches.sys.modules, "megatron_adaptor", raising=False)
+    monkeypatch.setitem(__import__("sys").modules, "torch_npu", SimpleNamespace())
+    monkeypatch.delitem(__import__("sys").modules, "megatron_adaptor", raising=False)
 
     with pytest.raises(RuntimeError, match="already selected 'cuda'"):
         patches.before_megatron_import()
@@ -215,3 +227,21 @@ def test_reapplying_patches_passes_typed_args_and_restores_attention(monkeypatch
     assert events == ["remove", ("pre", full_args), "features"]
     assert attention_class.forward is vime_forward
     assert args.vllm_additional_config is typed_config
+
+
+@pytest.mark.unit
+def test_auto_selection_preserves_cuda_priority_and_ignores_ascend_hints(monkeypatch):
+    monkeypatch.delenv("VIME_ACCELERATOR")
+    monkeypatch.setenv("ASCEND_HOME_PATH", "/usr/local/Ascend")
+    monkeypatch.setattr(accelerator, "_cuda_available", lambda: True)
+    monkeypatch.setattr(accelerator.CUDAAccelerator, "is_available", lambda self: True)
+    monkeypatch.setattr(
+        accelerator, "_bootstrap_torch_npu_if_needed", lambda: pytest.fail("CUDA must not bootstrap NPU")
+    )
+    assert accelerator.initialize_accelerator().name == "cuda"
+
+
+@pytest.mark.unit
+def test_auto_selection_can_use_npu_when_no_existing_backend_is_available(monkeypatch):
+    monkeypatch.delenv("VIME_ACCELERATOR")
+    assert accelerator.initialize_accelerator().name == "npu"

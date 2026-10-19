@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -13,6 +14,7 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 from tqdm import tqdm
 
+from vime.backends.vllm_weight_transfer import current as current_weight_transfer
 from vime.utils import accelerator
 from vime.utils.distributed_utils import get_gloo_group
 from vime.utils.types import ParamInfo
@@ -69,7 +71,7 @@ def _build_packed_ipc_update_info(
     )
     assert chunk is not None
     _, ipc_args = reduce_tensor(chunk.packed_tensor)
-    gpu_uuid = accelerator.device_uuid()
+    gpu_uuid = current_weight_transfer().ipc_handle_key()
     return (
         {
             "names": chunk.names,
@@ -199,8 +201,8 @@ class UpdateWeightFromTensor:
 
                 client = VimeRayWeightSyncClient(self.rollout_engines, lambda: self.weight_version)
                 trainer = WeightTransferTrainerFactory.trainer_init(
-                    accelerator.trainer_init_info(
-                        colocate=True,
+                    current_weight_transfer().init_info(
+                        "ipc",
                         rank=dist.get_rank(),
                         packed=True,
                         packed_buffer_size_bytes=_native_ipc_buffer_size(
@@ -307,7 +309,7 @@ class UpdateWeightFromTensor:
         # with the unfinished transfer and prevent its peers from launching.
         # Include ranks without local transfers so every batch has one fence.
         dist.barrier(group=get_gloo_group())
-        torch.cuda.synchronize()
+        accelerator.synchronize()
 
         hf_named_tensors = []
         for expert_param, tensor in local_params:

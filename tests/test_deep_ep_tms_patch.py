@@ -14,7 +14,8 @@ def _load_megatron_utils_init(monkeypatch, buffer_cls, tms_impl, module_name, se
 
     # Pin what selection returns: whether this machine has an accelerator at
     # all would otherwise decide which branch the patch takes.
-    monkeypatch.setattr(accelerator, "initialize_accelerator", lambda: selected_accelerator)
+    monkeypatch.setattr(accelerator, "initialize_accelerator", lambda **_kwargs: selected_accelerator)
+    monkeypatch.setattr(accelerator, "describe_accelerator", accelerator.CUDAAccelerator)
 
     deep_ep = types.ModuleType("deep_ep")
     deep_ep.Buffer = buffer_cls

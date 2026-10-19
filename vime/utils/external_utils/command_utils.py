@@ -6,13 +6,14 @@ import datetime
 import json
 import os
 import random
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from vime.utils import accelerator
-from vime.utils.external_utils.launch import launch_commands, launch_platform
+from vime.utils.external_utils.launch import launch_inputs, shell_exports
 from vime.utils.external_utils.typer_utils import dataclass_cli
 from vime.utils.misc import exec_command
 
@@ -30,8 +31,8 @@ def convert_checkpoint(
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
 ):
-    if not accelerator.supports("torch_dist_checkpoint_convert"):
-        print(f"convert_checkpoint skip on {accelerator.device_type()} (native HF load)")
+    if not accelerator.describe_accelerator().supports("torch_dist_checkpoint_convert"):
+        print(f"convert_checkpoint skip on {accelerator.describe_accelerator().name} (native HF load)")
         return
 
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
@@ -111,25 +112,12 @@ def execute_train(
     if config is None:
         config = ExecuteTrainConfig()
 
-    platform = launch_platform()
-    if platform is not None:
-        cmds = launch_commands(
-            platform,
-            train_args=train_args,
-            num_devices=num_gpus_per_node,
-            megatron_model_type=megatron_model_type,
-            repo_base_dir=str(repo_base_dir),
-            train_script=train_script,
-            extra_env={**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)},
-            external_ray=get_bool_env_var("VIME_SCRIPT_EXTERNAL_RAY"),
-            master_addr=os.environ.get("MASTER_ADDR", "127.0.0.1"),
-        )
-        for cmd in cmds[:-1]:
-            exec_command(cmd)
-        if before_ray_job_submit is not None:
-            before_ray_job_submit()
-        exec_command(cmds[-1])
-        return
+    launch = launch_inputs(num_gpus_per_node)
+    extra_env_vars = {**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)}
+    launch.validate_overrides(extra_env_vars)
+    # User overrides for platform-required startup variables must reach the
+    # raylet too. Other job-only overrides retain main's original scope.
+    start_env = {key: extra_env_vars.get(key, value) for key, value in launch.start_env.items()}
 
     external_ray = get_bool_env_var("VIME_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
@@ -149,8 +137,8 @@ def execute_train(
         if not ray_running:
             exec_command(
                 # will prevent ray from buffering stdout/stderr
-                f"export PYTHONUNBUFFERED=1 && "
-                f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
+                f"{shell_exports(start_env)}export PYTHONUNBUFFERED=1 && "
+                f"ray start --head --node-ip-address {master_addr} {launch.ray_args} --disable-usage-stats"
             )
 
     if (f := before_ray_job_submit) is not None:
@@ -159,10 +147,7 @@ def execute_train(
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                "PYTHONPATH": "/root/Megatron-LM/",
-                "RAY_USE_UVLOOP": "0",
-                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
+                **launch.job_env,
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
@@ -176,8 +161,8 @@ def execute_train(
                     if config.cuda_core_dump
                     else {}
                 ),
+                **launch.start_env,
                 **extra_env_vars,
-                **_parse_extra_env_vars(config.extra_env_vars),
             }
         }
     )
@@ -202,11 +187,9 @@ def execute_train(
                 "RAY_USE_UVLOOP": "0",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "MASTER_ADDR": master_addr,
+                **launch.start_env,
                 **extra_env_vars,
-                **_parse_extra_env_vars(config.extra_env_vars),
             }
-            import shlex
-
             amd_exports = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in amd_env.items())
             exec_command(
                 f"export {amd_exports} && "
@@ -218,7 +201,7 @@ def execute_train(
                 f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
                 f"{cmd_megatron_model_source}"
                 f'ray job submit --address="http://127.0.0.1:8265" '
-                f"--runtime-env-json='{runtime_env_json}' "
+                f"--runtime-env-json={shlex.quote(runtime_env_json)} "
                 f"-- python3 train.py "
                 f"{model_args} "
                 f"{train_args}"

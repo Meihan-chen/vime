@@ -23,6 +23,7 @@ from .cuda import CUDAAccelerator
 from .musa import MUSAAccelerator
 from .musa import is_musa_available as _is_musa_available
 from .npu import NPUAccelerator
+from .npu import has_visible_device as _has_npu_device
 from .npu import is_npu_available as _is_npu_available
 from .supa import SUPAAccelerator
 from .supa import is_supa_available as _is_supa_available
@@ -130,106 +131,6 @@ def _bootstrap_musa_patch_if_needed() -> bool:
     return _try_import_musa_patch()
 
 
-def _import_torch_npu() -> bool:
-    try:
-        importlib.import_module("torch_npu")
-    except ModuleNotFoundError as exc:
-        if exc.name == "torch_npu":
-            return False
-        raise RuntimeError(f"torch_npu failed because dependency {exc.name!r} is missing") from exc
-    except Exception as exc:
-        raise RuntimeError(f"torch_npu initialization failed: {exc}") from exc
-    return True
-
-
-def is_npu_available() -> bool:
-    return _is_npu_available()
-
-
-def is_npu_environment() -> bool:
-    return (
-        is_npu_available()
-        or os.environ.get("VIME_ACCELERATOR", "").lower() == "npu"
-        or "ASCEND_RT_VISIBLE_DEVICES" in os.environ
-        or bool(os.environ.get("ASCEND_HOME_PATH"))
-    )
-
-
-def _try_import_torch_npu() -> bool:
-    global _NPU_RUNTIME_IMPORTED
-    if _NPU_RUNTIME_IMPORTED:
-        return True
-    if not is_npu_environment():
-        return False
-    _NPU_RUNTIME_IMPORTED = _import_torch_npu()
-    if not _NPU_RUNTIME_IMPORTED and is_npu_environment():
-        logger.warning("torch_npu is not importable; continuing without Ascend NPU support")
-    return _NPU_RUNTIME_IMPORTED
-
-
-def _npu_requested() -> bool:
-    configured = os.environ.get("VIME_ACCELERATOR", "").lower()
-    if configured and configured != "auto":
-        return configured == "npu"
-    return "ASCEND_RT_VISIBLE_DEVICES" in os.environ or bool(os.environ.get("ASCEND_HOME_PATH"))
-
-
-_DEFAULT_PLUGINS = {"npu": "vime_plugins.ascend"}
-
-
-def _plugin_module(accelerator_name: str) -> str | None:
-    """Which support package registers this accelerator's behaviour.
-
-    ``VIME_PLUGINS`` overrides the default: a module path to load instead, or
-    an empty value to register nothing. Setting it empty is how a process gets
-    the accelerator API without the vendor patches that come with the support
-    package.
-    """
-    configured = os.environ.get("VIME_PLUGINS")
-    if configured is None:
-        return _DEFAULT_PLUGINS.get(accelerator_name)
-    configured = configured.strip()
-    return configured or None
-
-
-def _load_plugin(accelerator_name: str) -> None:
-    """Register the chosen accelerator's behaviour, or fail saying why.
-
-    A missing package cannot be a warning: every seam falls back to the
-    behaviour the GPU path uses, so a backend that silently registers nothing
-    would run on its own device under another device's memory and environment
-    policy. Running without the package is only safe when it was asked for,
-    which ``VIME_PLUGINS`` is how to ask.
-    """
-    module_path = _plugin_module(accelerator_name)
-    if module_path is None:
-        return
-    try:
-        module = importlib.import_module(module_path)
-    except ImportError as exc:
-        raise RuntimeError(
-            f"Accelerator {accelerator_name!r} needs support package {module_path}, which failed to import: {exc}. "
-            "Set VIME_PLUGINS empty to run with the accelerator API alone."
-        ) from exc
-    module.register_all()
-
-
-def _bootstrap_torch_npu_if_needed() -> bool:
-    """Bootstrap torch_npu for an already chosen NPU backend at most once."""
-    global _NPU_BOOTSTRAP_CHECKED
-    if _NPU_BOOTSTRAP_CHECKED:
-        return _NPU_RUNTIME_IMPORTED
-    # Marked only once the whole sequence succeeds. Marking first would let a
-    # retry report the half-finished state as settled, and the vendor patches
-    # installed along the way cannot be undone within the process, so a failed
-    # attempt has to surface rather than be cached.
-    imported = _try_import_torch_npu()
-    if imported:
-        _load_plugin("npu")
-    _NPU_BOOTSTRAP_CHECKED = True
-    return imported
-
-
 def _import_torch_supa() -> bool:
     try:
         importlib.import_module("torch_supa")
@@ -283,6 +184,45 @@ def _bootstrap_torch_supa_if_needed() -> bool:
     return _try_import_torch_supa()
 
 
+def _import_torch_npu() -> bool:
+    try:
+        importlib.import_module("torch_npu")
+    except ModuleNotFoundError as exc:
+        if exc.name == "torch_npu":
+            return False
+        raise RuntimeError(f"torch_npu failed because dependency {exc.name!r} is missing") from exc
+    except Exception as exc:
+        raise RuntimeError(f"torch_npu initialization failed: {exc}") from exc
+    return True
+
+
+def is_npu_available() -> bool:
+    return _is_npu_available()
+
+
+def _try_import_torch_npu() -> bool:
+    global _NPU_RUNTIME_IMPORTED
+    if _NPU_RUNTIME_IMPORTED:
+        return True
+    if not _has_npu_device():
+        raise RuntimeError(
+            "Requested NPU runtime has no visible Ascend device; configure the driver through describe_accelerator()"
+        )
+    _NPU_RUNTIME_IMPORTED = _import_torch_npu()
+    if not _NPU_RUNTIME_IMPORTED:
+        raise RuntimeError("Ascend devices are present but torch_npu is not installed")
+    return True
+
+
+def _bootstrap_torch_npu_if_needed() -> bool:
+    global _NPU_BOOTSTRAP_CHECKED
+    if _NPU_BOOTSTRAP_CHECKED:
+        return _NPU_RUNTIME_IMPORTED
+    imported = _try_import_torch_npu()
+    _NPU_BOOTSTRAP_CHECKED = True
+    return imported
+
+
 def _cuda_available() -> bool:
     try:
         return bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
@@ -297,22 +237,20 @@ def _register_builtin_backends() -> None:
         register_accelerator(
             "musa", MUSAAccelerator, is_musa_available, priority=200, communication_backends=("mccl",)
         )
-    if "npu" not in _REGISTRY:
-        register_accelerator("npu", NPUAccelerator, is_npu_available, priority=250, communication_backends=("hccl",))
     if "supa" not in _REGISTRY:
         register_accelerator(
             "supa", SUPAAccelerator, is_supa_available, priority=150, communication_backends=("bccl",)
         )
+    if "npu" not in _REGISTRY:
+        register_accelerator("npu", NPUAccelerator, is_npu_available, priority=0, communication_backends=("hccl",))
 
 
 def _requested_name() -> str | None:
-    value = os.environ.get("VIME_ACCELERATOR")
+    value = os.environ.get("VIME_ACCELERATOR", "").strip()
     if value and value.lower() != "auto":
         return value.strip().lower()
     if _musa_requested():
         return "musa"
-    if _npu_requested():
-        return "npu"
     if _supa_requested():
         return "supa"
     return None
@@ -328,22 +266,22 @@ def _make_selected(name: str, explicit: bool) -> Accelerator:
         # musa_patch may expose torch.musa, so bootstrap after MUSA has been
         # chosen but before validating and constructing its backend.
         _bootstrap_musa_patch_if_needed()
-    if name == "npu":
-        # Importing torch_npu attaches torch.npu and registers the NPU device.
-        _bootstrap_torch_npu_if_needed()
     if name == "supa":
         # torch_supa attaches torch.supa and registers the "supa" device type,
         # so bootstrap after SUPA has been chosen but before validating it.
         _bootstrap_torch_supa_if_needed()
+    if name == "npu":
+        # Importing torch_npu attaches torch.npu and registers the NPU device.
+        _bootstrap_torch_npu_if_needed()
     if explicit and not entry.is_available():
         if name == "musa":
             detail = (
                 "torch.musa is unavailable; install a MUSA-enabled PyTorch runtime and set MUSA_PATCH_PATH if required"
             )
-        elif name == "npu":
-            detail = "torch.npu is unavailable; install torch_npu and ensure an Ascend device is visible"
         elif name == "supa":
             detail = "torch.supa is unavailable; install a SUPA-enabled PyTorch runtime that provides torch_supa"
+        elif name == "npu":
+            detail = "torch.npu is unavailable; install torch_npu and ensure an Ascend device is visible"
         elif name == "cuda":
             detail = "torch.cuda.is_available() is false or no CUDA device is visible"
         else:
@@ -353,6 +291,14 @@ def _make_selected(name: str, explicit: bool) -> Accelerator:
     if not backend.is_available():
         raise RuntimeError(f"Accelerator backend {name!r} was selected but is unavailable at runtime")
     return backend
+
+
+def _candidate_available(name: str, entry: _BackendRegistration) -> bool:
+    if name == "npu" and entry.factory is NPUAccelerator:
+        if not _has_npu_device():
+            return False
+        _bootstrap_torch_npu_if_needed()
+    return entry.is_available()
 
 
 def get_accelerator() -> Accelerator:
@@ -372,7 +318,7 @@ def get_accelerator() -> Accelerator:
         # Highest priority wins; names break priority ties deterministically.
         candidates = sorted(_REGISTRY.items(), key=lambda item: (-item[1].priority, item[0]))
         for name, registration in candidates:
-            if registration.is_available():
+            if _candidate_available(name, registration):
                 _ACCELERATOR = _make_selected(name, explicit=False)
                 logger.info("Selected accelerator %s (auto)", _ACCELERATOR.name)
                 return _ACCELERATOR
@@ -384,18 +330,33 @@ def get_accelerator() -> Accelerator:
         )
 
 
-def initialize_accelerator() -> Accelerator | None:
+def initialize_accelerator(*, require_device: bool = True) -> Accelerator | None:
     """Finalize runtime selection when a backend is requested or available.
 
-    Explicit requests retain ``get_accelerator``'s fail-fast behavior. An
-    environment without accelerator hardware remains importable for CPU-only
-    tooling and documentation.
+    Explicit requests normally retain ``get_accelerator``'s fail-fast behavior.
+    Backend package imports may pass ``require_device=False`` for a CPU driver
+    when the backend declares that its definitions can be imported without a
+    local device. Actual device operations still use strict runtime selection.
     """
     if _ACCELERATOR is not None:
         return _ACCELERATOR
     with _SELECTION_LOCK:
         _register_builtin_backends()
-        if _requested_name() is not None or any(entry.is_available() for entry in _REGISTRY.values()):
+        requested = _requested_name()
+        # A backend may prepare third-party imports on a metadata-only driver.
+        # Preserve runtime bootstrap for backends that require it during imports.
+        if not require_device and requested is not None:
+            entry = _REGISTRY.get(requested)
+            if (
+                entry is not None
+                and entry.factory().supports("imports_without_local_device")
+                and not entry.is_available()
+            ):
+                return None
+        if requested is not None or any(
+            _candidate_available(name, entry)
+            for name, entry in sorted(_REGISTRY.items(), key=lambda item: (-item[1].priority, item[0]))
+        ):
             return get_accelerator()
         return None
 
@@ -415,13 +376,15 @@ def reset_accelerator() -> None:
     global _ACCELERATOR
     with _SELECTION_LOCK:
         _ACCELERATOR = None
+        if (support := sys.modules.get("vime.utils.support")) is not None:
+            support.reset_support()
 
 
 def _backend() -> Accelerator:
     return get_accelerator()
 
 
-def _described_backend() -> Accelerator:
+def describe_accelerator() -> Accelerator:
     """The backend whose description applies, without requiring a usable device.
 
     A driver that only builds scheduling requests needs the resource name, not
@@ -540,10 +503,6 @@ def attach_oom_observer(callback) -> bool:
     return _backend().attach_oom_observer(callback)
 
 
-def device_uuid(index: int | str | None = None) -> str:
-    return _backend().device_uuid(index)
-
-
 def supports(capability: str) -> bool:
     return _backend().supports(capability)
 
@@ -597,20 +556,12 @@ def weight_update_backend(default: str = "nccl") -> str:
     return _backend().weight_update_backend(default)
 
 
-def weight_transfer_backend(transport: str) -> str:
-    return _backend().weight_transfer_backend(transport)
-
-
-def trainer_init_info(*, colocate: bool, **kwargs: Any) -> Any:
-    return _backend().trainer_init_info(colocate=colocate, **kwargs)
-
-
 def ray_resource_name() -> str:
-    return _described_backend().ray_resource_name
+    return describe_accelerator().ray_resource_name
 
 
 def ray_uses_native_gpu_resource() -> bool:
-    return _described_backend().ray_uses_native_gpu_resource
+    return describe_accelerator().ray_uses_native_gpu_resource
 
 
 def visible_devices_env_key() -> str:

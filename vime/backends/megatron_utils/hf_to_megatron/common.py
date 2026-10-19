@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from safetensors import safe_open
 
 
-
 class SafetensorReader:
     def __init__(self, path: str | Path):
         self.path = Path(path)

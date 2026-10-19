@@ -1,9 +1,4 @@
-"""Behaviour of the accelerator-keyed registries, on both the default and NPU.
-
-Each registry answers one question for the accelerator in use. An accelerator
-with no entry gets the default, which is CUDA's behaviour, so the pairs below
-assert both sides of every question.
-"""
+"""Shared component contracts for the existing default and Ascend support."""
 
 from __future__ import annotations
 
@@ -13,10 +8,12 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from vime.backends.megatron_support import MegatronSupport
+from vime.backends.vllm_weight_transfer import WeightTransfer
 from vime.utils.accelerator.base import Accelerator
 from vime.utils.accelerator.npu import NPUAccelerator
 from vime.utils.device_env import DeviceEnv
-from vime.utils.offload import OffloadPolicy
+from vime_plugins.ascend.weight_transfer import NpuWeightTransfer
 
 
 def _npu_device_env():
@@ -26,9 +23,9 @@ def _npu_device_env():
 
 
 def _npu_offload_policy():
-    from vime_plugins.ascend.offload import NpuOffloadPolicy
+    from vime_plugins.ascend.training import NpuMegatronSupport
 
-    return NpuOffloadPolicy()
+    return NpuMegatronSupport()
 
 
 # ── Ray resources ───────────────────────────────────────────────────────────
@@ -68,22 +65,17 @@ def test_ray_request_shapes(monkeypatch, resource_name, native, bundle, actor_op
 
 
 @pytest.mark.parametrize(
-    ("accelerator_cls", "nccl_name", "ipc_name"),
-    [(Accelerator, "nccl", "ipc"), (NPUAccelerator, "hccl", "npu_ipc")],
+    "provider,distributed,ipc", [(WeightTransfer, "nccl", "ipc"), (NpuWeightTransfer, "hccl", "npu_ipc")]
 )
 @pytest.mark.unit
-def test_transport_names_map_to_engines(accelerator_cls, nccl_name, ipc_name):
-    backend = accelerator_cls.weight_transfer_backend
-
-    assert backend(None, "nccl") == nccl_name
-    assert backend(None, "ipc") == ipc_name
-    for passthrough in ("npu_ipc", "hccl", "custom"):
-        assert backend(None, passthrough) == passthrough
+def test_transport_names_map_to_engines(provider, distributed, ipc):
+    assert provider().backend("distributed") == distributed
+    assert provider().backend("ipc") == ipc
+    with pytest.raises(KeyError):
+        provider().backend("typo")
 
 
-@pytest.mark.parametrize(
-    ("accelerator_name", "backends"), [("cuda", ("nccl", "ipc")), ("npu", ("hccl", "npu_ipc"))]
-)
+@pytest.mark.parametrize(("accelerator_name", "backends"), [("cuda", ("nccl", "ipc")), ("npu", ("hccl", "npu_ipc"))])
 @pytest.mark.unit
 def test_trainer_init_info_matches_the_selected_engine(monkeypatch, accelerator_name, backends):
     plugin_calls = []
@@ -104,8 +96,8 @@ def test_trainer_init_info_matches_the_selected_engine(monkeypatch, accelerator_
         monkeypatch.setitem(sys.modules, "vllm.plugins", plugins)
         monkeypatch.setitem(sys.modules, "torch_npu", ModuleType("torch_npu"))
 
-        accelerator_cls = Accelerator if accelerator_name == "cuda" else NPUAccelerator
-        info = accelerator_cls.trainer_init_info(None, colocate=colocate, rank=3, packed=True)
+        provider = WeightTransfer() if accelerator_name == "cuda" else NpuWeightTransfer()
+        info = provider.init_info("ipc" if colocate else "distributed", rank=3, packed=True)
 
         assert isinstance(info, info_cls)
         assert info.backend == backend
@@ -216,7 +208,7 @@ def test_default_policy_has_no_optimizer_state_to_materialize(chained):
     optimizers = [SimpleNamespace(optimizer=object(), config=object(), init_state_fn=_fail)]
     optimizer = SimpleNamespace(chained_optimizers=optimizers) if chained else optimizers[0]
 
-    OffloadPolicy().initialize_optimizer_state(optimizer)
+    MegatronSupport().initialize_optimizer_state(optimizer)
 
 
 def _fail(*args):
@@ -235,7 +227,7 @@ def test_npu_skips_an_optimizer_with_nothing_to_materialize(empty_optimizer):
     _npu_offload_policy().initialize_optimizer_state(optimizer)
 
 
-@pytest.mark.parametrize("policy", [OffloadPolicy, _npu_offload_policy])
+@pytest.mark.parametrize("policy", [MegatronSupport, _npu_offload_policy])
 @pytest.mark.unit
 def test_eval_only_has_no_optimizer_state_to_materialize(policy):
     policy().initialize_optimizer_state(None)
@@ -261,55 +253,3 @@ def test_memory_utils_keep_main_accelerator_surface(monkeypatch):
     memory_utils.clear_memory(clear_host_memory=True)
 
     assert calls == ["synchronize", "gc", "empty_cache", "empty_host_cache"]
-
-
-# ── Launch policy ───────────────────────────────────────────────────────────
-
-
-@pytest.mark.unit
-def test_default_accelerator_needs_no_launch_override(monkeypatch):
-    from vime.utils import device_env
-    from vime.utils.external_utils import launch
-
-    monkeypatch.setattr(device_env, "_REGISTRY", {})
-    monkeypatch.setattr(device_env.accelerator, "device_type", lambda: "cuda")
-
-    assert launch.launch_platform() is None
-
-
-@pytest.mark.unit
-def test_npu_launch_platform_advertises_its_own_ray_resource(monkeypatch):
-    from vime.utils import accelerator, device_env
-    from vime.utils.external_utils import launch
-
-    monkeypatch.setitem(device_env._REGISTRY, "npu", _npu_device_env())
-    monkeypatch.setattr(device_env.accelerator, "device_type", lambda: "npu")
-    monkeypatch.setattr(accelerator, "device_type", lambda: "npu")
-    monkeypatch.setattr(accelerator, "ray_resource_name", lambda: "NPU")
-    monkeypatch.setattr(accelerator, "ray_uses_native_gpu_resource", lambda: False)
-
-    platform = launch.launch_platform()
-
-    assert platform is not None
-    # The launch command must ask for the same resource name the process does.
-    assert platform.ray_start_args(8) == "--num-gpus 0 --resources '{\"NPU\": 8}'"
-    assert platform.env["HCCL_CONNECT_TIMEOUT"] == "7200"
-
-
-@pytest.mark.unit
-def test_native_gpu_resource_keeps_the_plain_ray_flag(monkeypatch):
-    from vime.utils import accelerator, device_env
-    from vime.utils.external_utils import launch
-
-    class StubDeviceEnv(DeviceEnv):
-        def launch_env(self):
-            return {"A": "1"}
-
-    monkeypatch.setitem(device_env._REGISTRY, "stub", StubDeviceEnv())
-    monkeypatch.setattr(device_env.accelerator, "device_type", lambda: "stub")
-    monkeypatch.setattr(accelerator, "device_type", lambda: "stub")
-    monkeypatch.setattr(accelerator, "ray_uses_native_gpu_resource", lambda: True)
-
-    platform = launch.launch_platform()
-
-    assert platform.ray_start_args(4) == "--num-gpus 4"

@@ -2,13 +2,13 @@ import logging
 
 import torch
 
-from vime.utils import accelerator, vendor_hooks
+from vime.backends.megatron_support import current as current_megatron_support
+from vime.utils import accelerator
 
-# Selecting the accelerator is what lets a vendor register for the point
-# below, and the patches it installs there have to precede every megatron
-# import in this package.
-accelerator.initialize_accelerator()
-vendor_hooks.run("before_megatron_import")
+# Resolve complete support before any Megatron import. A CPU driver can load
+# backend definitions; device operations still require an available runtime.
+accelerator.initialize_accelerator(require_device=False)
+current_megatron_support().before_import()
 
 try:
     import deep_ep

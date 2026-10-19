@@ -8,7 +8,6 @@ from unittest.mock import Mock
 import pytest
 
 
-
 def _pin_ray_resource(monkeypatch, resources_module, *, resource_name, native):
     monkeypatch.setattr(resources_module.accelerator, "ray_resource_name", lambda: resource_name)
     monkeypatch.setattr(resources_module.accelerator, "ray_uses_native_gpu_resource", lambda: native)
@@ -130,8 +129,7 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
         actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
     )
     offload_policy = SimpleNamespace(
-        train_actor_env=lambda args, env: runtime_env_inputs.append((args, dict(env)))
-        or {**env, "PLATFORM_ENV": "1"},
+        train_actor_env=lambda args, env: runtime_env_inputs.append((args, dict(env))) or {**env, "PLATFORM_ENV": "1"},
     )
     monkeypatch.setattr(actor_group_module.resources, "actor_options", ray_ops.actor_options)
     monkeypatch.setattr(actor_group_module, "current_device_env", lambda: offload_policy)
@@ -178,7 +176,7 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
     )
     assert group.create() == [0]
 
-    assert runtime_env_inputs[0][0] is args
+    assert vars(runtime_env_inputs[0][0]) == {**vars(args), "update_weight_start_version": 0}
     assert runtime_env_inputs[0][1]["USER_ENV"] == "yes"
     assert remote_declarations[0]["runtime_env"]["env_vars"]["PLATFORM_ENV"] == "1"
     assert remote_declarations[0]["num_gpus"] == 1
@@ -194,17 +192,17 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
     runtime_env_inputs = []
     ray_ops = SimpleNamespace(
         actor_options=Mock(
-            side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}
-            if is_npu
-            else {"num_gpus": fraction}
+            side_effect=lambda fraction: (
+                {"num_gpus": 0, "resources": {"ACCEL": fraction}} if is_npu else {"num_gpus": fraction}
+            )
         ),
     )
     transfer = SimpleNamespace(
         engine_actor_env=lambda args, env: (
-            runtime_env_inputs.append((args, dict(env))) or {**env, "PLATFORM_ENV": "rollout"}
-        )
-        if is_npu
-        else dict(env),
+            (runtime_env_inputs.append((args, dict(env))) or {**env, "PLATFORM_ENV": "rollout"})
+            if is_npu
+            else dict(env)
+        ),
     )
     monkeypatch.setattr(rollout_module.resources, "actor_options", ray_ops.actor_options)
     monkeypatch.setattr(rollout_module, "current_device_env", lambda: transfer)
@@ -226,7 +224,7 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
     monkeypatch.setattr(
         rollout_module,
         "_allocate_rollout_engine_addr_and_ports_normal",
-        lambda **_kwargs: ({0: {}}, {0: 15001}),
+        lambda **_kwargs: ({0: {"host": "127.0.0.1", "port": 15000}}, {0: 15001}),
     )
 
     args = SimpleNamespace(
@@ -282,9 +280,7 @@ def test_train_actor_maps_the_assigned_device_to_a_local_id(
     from vime.ray import train_actor as train_actor_module
 
     accelerator_ids = Mock(return_value=[assigned_id])
-    monkeypatch.setattr(
-        train_actor_module.resources, "accelerator_ids", accelerator_ids
-    )
+    monkeypatch.setattr(train_actor_module.resources, "accelerator_ids", accelerator_ids)
     monkeypatch.setenv(visible_env, visible)
     monkeypatch.setattr(
         train_actor_module.accelerator,
