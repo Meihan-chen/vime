@@ -1,0 +1,45 @@
+diff --git a/transformer_engine/pytorch/attention/dot_product_attention/ring_context_parallel.py b/transformer_engine/pytorch/attention/dot_product_attention/ring_context_parallel.py
+--- a/transformer_engine/pytorch/attention/dot_product_attention/ring_context_parallel.py
++++ b/transformer_engine/pytorch/attention/dot_product_attention/ring_context_parallel.py
+@@ -912,6 +912,28 @@
+         )
+
+
++def _local_thd_cu_seqlens(cu_seqlens, local_tokens, cp_size):
++    """Resolve global packed lengths to the rank-local causal ring layout.
++
++    Megatron supplies global cumulative lengths even when padded lengths are
++    omitted. Older callers may already supply local lengths. The tensor's T
++    dimension distinguishes these contracts without dividing local lengths twice.
++    """
++    lengths = cu_seqlens.tolist() if isinstance(cu_seqlens, torch.Tensor) else list(cu_seqlens)
++    if not lengths or lengths[0] != 0 or any(b < a for a, b in zip(lengths, lengths[1:])):
++        raise ValueError("THD CP cumulative lengths must start at zero and be nondecreasing")
++    if lengths[-1] != local_tokens:
++        if lengths[-1] != local_tokens * cp_size or any(x % cp_size for x in lengths):
++            raise ValueError(
++                "THD CP global cumulative lengths must match local T * CP and be divisible by CP; "
++                "provide cu_seqlens_*_padded for padded packed sequences"
++            )
++        lengths = [x // cp_size for x in lengths]
++    if any((b - a) % 2 for a, b in zip(lengths, lengths[1:])):
++        raise ValueError("THD causal ring CP requires even rank-local sequence lengths")
++    return lengths
++
++
+ class AttnFuncWithCPAndRing(torch.autograd.Function):
+     """Attention implementation with context parallelism"""
+
+@@ -967,6 +989,12 @@
+             if cp_config.is_eod_reset:
+                 q_index, kv_index = None, None
+                 if qkv_format == 'thd':
++                    cu_seqlens_q = _local_thd_cu_seqlens(
++                        cu_seqlens_q, q.shape[0], cp_config.cp_size
++                    )
++                    cu_seqlens_kv = _local_thd_cu_seqlens(
++                        cu_seqlens_kv, k.shape[0], cp_config.cp_size
++                    )
+                     q_index, kv_index = compute_qkv_index(tuple(cu_seqlens_q))
+                 cp_config.actual_seq_kvlen = cu_seqlens_kv if max_seqlen_kv else None
+                 cp_config.actual_seq_qlen = cu_seqlens_q if max_seqlen_q else None
