@@ -80,8 +80,6 @@ class NPUAccelerator(TorchAccelerator):
         return False
 
     def supports(self, capability: str) -> bool:
-        if capability == "imports_without_local_device":
-            return True
         if capability in {
             "cuda_int4_extension",
             "nvml_affinity",

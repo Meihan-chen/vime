@@ -34,7 +34,6 @@ class CUDAAccelerator(TorchAccelerator):
             checker = getattr(torch.cuda, "is_bf16_supported", None)
             return bool(checker and checker())
         if capability in {
-            "imports_without_local_device",
             "cuda_int4_extension",
             "vllm_fp8_utils",
             "strict_fp32_logits",

@@ -137,6 +137,46 @@ def test_cpu_only_initialization_does_not_require_an_accelerator(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("backend", ["cuda", "musa", "supa", "npu", "fake"])
+def test_import_prepares_runtime_without_requiring_local_hardware(monkeypatch, backend):
+    imports = []
+    monkeypatch.setenv("VIME_ACCELERATOR", backend)
+    for check in ("_cuda_available", "is_musa_available", "is_supa_available", "is_npu_available", "_has_npu_device"):
+        monkeypatch.setattr(accelerator, check, lambda: False)
+    monkeypatch.setattr(accelerator, "_import_musa_patch", lambda: imports.append("musa") or True)
+    monkeypatch.setattr(accelerator, "_import_torch_supa", lambda: imports.append("supa") or True)
+    monkeypatch.setattr(accelerator, "_import_torch_npu", lambda: pytest.fail("No NPU is visible"))
+    accelerator.register_accelerator("fake", FakeAccelerator, lambda: False)
+    monkeypatch.setattr(FakeAccelerator, "supports", lambda *args: pytest.fail("No hardware capability is needed"))
+
+    assert accelerator.initialize_accelerator(require_device=False) is None
+    assert accelerator.initialize_accelerator(require_device=False) is None
+    assert imports == ([backend] if backend in {"musa", "supa"} else [])
+    assert accelerator._ACCELERATOR is None
+    with pytest.raises(RuntimeError, match="unavailable|no visible"):
+        accelerator.get_accelerator()
+
+
+@pytest.mark.unit
+def test_import_preparation_rejects_an_unknown_explicit_backend(monkeypatch):
+    monkeypatch.setenv("VIME_ACCELERATOR", "unknown")
+    with pytest.raises(ValueError, match="Unknown accelerator"):
+        accelerator.initialize_accelerator(require_device=False)
+
+
+@pytest.mark.unit
+def test_import_preparation_does_not_hide_a_broken_runtime_dependency(monkeypatch):
+    monkeypatch.setenv("VIME_ACCELERATOR", "supa")
+
+    def broken_runtime():
+        raise RuntimeError("SUPA dependency failed")
+
+    monkeypatch.setattr(accelerator, "_import_torch_supa", broken_runtime)
+    with pytest.raises(RuntimeError, match="SUPA dependency failed"):
+        accelerator.initialize_accelerator(require_device=False)
+
+
+@pytest.mark.unit
 def test_musa_backend_maps_devices_and_process_groups(monkeypatch):
     monkeypatch.setattr(accelerator.MUSAAccelerator, "is_available", lambda self: True)
     monkeypatch.setenv("MUSA_VISIBLE_DEVICES", "2,5")

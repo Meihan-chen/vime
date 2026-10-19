@@ -256,7 +256,7 @@ def _requested_name() -> str | None:
     return None
 
 
-def _make_selected(name: str, explicit: bool) -> Accelerator:
+def _make_selected(name: str, explicit: bool, *, require_device: bool = True) -> Accelerator | None:
     _register_builtin_backends()
     entry = _REGISTRY.get(name)
     if entry is None:
@@ -270,9 +270,11 @@ def _make_selected(name: str, explicit: bool) -> Accelerator:
         # torch_supa attaches torch.supa and registers the "supa" device type,
         # so bootstrap after SUPA has been chosen but before validating it.
         _bootstrap_torch_supa_if_needed()
-    if name == "npu":
+    if name == "npu" and (require_device or _has_npu_device()):
         # Importing torch_npu attaches torch.npu and registers the NPU device.
         _bootstrap_torch_npu_if_needed()
+    if not require_device and not entry.is_available():
+        return None
     if explicit and not entry.is_available():
         if name == "musa":
             detail = (
@@ -333,26 +335,19 @@ def get_accelerator() -> Accelerator:
 def initialize_accelerator(*, require_device: bool = True) -> Accelerator | None:
     """Finalize runtime selection when a backend is requested or available.
 
-    Explicit requests normally retain ``get_accelerator``'s fail-fast behavior.
-    Backend package imports may pass ``require_device=False`` for a CPU driver
-    when the backend declares that its definitions can be imported without a
-    local device. Actual device operations still use strict runtime selection.
+    Package imports may pass ``require_device=False`` to prepare the selected
+    runtime without demanding local hardware. This also applies to registered
+    backends. Actual device operations retain ``get_accelerator``'s strict checks.
     """
+    global _ACCELERATOR
     if _ACCELERATOR is not None:
         return _ACCELERATOR
     with _SELECTION_LOCK:
         _register_builtin_backends()
         requested = _requested_name()
-        # A backend may prepare third-party imports on a metadata-only driver.
-        # Preserve runtime bootstrap for backends that require it during imports.
         if not require_device and requested is not None:
-            entry = _REGISTRY.get(requested)
-            if (
-                entry is not None
-                and entry.factory().supports("imports_without_local_device")
-                and not entry.is_available()
-            ):
-                return None
+            _ACCELERATOR = _make_selected(requested, explicit=True, require_device=False)
+            return _ACCELERATOR
         if requested is not None or any(
             _candidate_available(name, entry)
             for name, entry in sorted(_REGISTRY.items(), key=lambda item: (-item[1].priority, item[0]))
