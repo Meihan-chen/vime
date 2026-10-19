@@ -1,4 +1,4 @@
-"""Shared component contracts for the existing default and Ascend support."""
+"""Shared component contracts for the existing default and Ascend integration."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from vime.backends.megatron_support import MegatronSupport
+from vime.backends.megatron_integration import MegatronIntegration
 from vime.backends.vllm_weight_transfer import WeightTransfer
 from vime.utils.accelerator.base import Accelerator
 from vime.utils.accelerator.npu import NPUAccelerator
@@ -23,9 +23,9 @@ def _npu_device_env():
 
 
 def _npu_offload_policy():
-    from vime_plugins.ascend.training import NpuMegatronSupport
+    from vime_plugins.ascend.training import AscendMegatronIntegration
 
-    return NpuMegatronSupport()
+    return AscendMegatronIntegration()
 
 
 # ── Ray resources ───────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ def test_default_policy_has_no_optimizer_state_to_materialize(chained):
     optimizers = [SimpleNamespace(optimizer=object(), config=object(), init_state_fn=_fail)]
     optimizer = SimpleNamespace(chained_optimizers=optimizers) if chained else optimizers[0]
 
-    MegatronSupport().initialize_optimizer_state(optimizer)
+    MegatronIntegration().initialize_optimizer_state(optimizer)
 
 
 def _fail(*args):
@@ -227,7 +227,7 @@ def test_npu_skips_an_optimizer_with_nothing_to_materialize(empty_optimizer):
     _npu_offload_policy().initialize_optimizer_state(optimizer)
 
 
-@pytest.mark.parametrize("policy", [MegatronSupport, _npu_offload_policy])
+@pytest.mark.parametrize("policy", [MegatronIntegration, _npu_offload_policy])
 @pytest.mark.unit
 def test_eval_only_has_no_optimizer_state_to_materialize(policy):
     policy().initialize_optimizer_state(None)

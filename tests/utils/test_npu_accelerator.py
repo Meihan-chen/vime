@@ -147,13 +147,13 @@ def test_bootstrap_selects_npu_before_adaptor_and_attention(monkeypatch):
 
 @pytest.mark.unit
 def test_support_runs_bootstrap_once_and_rejects_partial_retry(monkeypatch):
-    from vime_plugins.ascend.training import NpuMegatronSupport
+    from vime_plugins.ascend.training import AscendMegatronIntegration
 
     calls = []
     monkeypatch.setattr(patches, "before_megatron_import", lambda: calls.append("install"))
-    support = NpuMegatronSupport()
-    support.before_import()
-    support.before_import()
+    integration = AscendMegatronIntegration()
+    integration.before_import()
+    integration.before_import()
     assert calls == ["install"]
 
     def partial_failure():
@@ -161,7 +161,7 @@ def test_support_runs_bootstrap_once_and_rejects_partial_retry(monkeypatch):
         raise RuntimeError("partial patch")
 
     monkeypatch.setattr(patches, "before_megatron_import", partial_failure)
-    failed = NpuMegatronSupport()
+    failed = AscendMegatronIntegration()
     with pytest.raises(RuntimeError, match="partial patch"):
         failed.before_import()
     with pytest.raises(RuntimeError, match="restart"):

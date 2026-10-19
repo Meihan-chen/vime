@@ -1,4 +1,4 @@
-"""Assemble one complete support value for the selected accelerator.
+"""Assemble one complete platform integration value for the selected accelerator.
 
 Factories only construct lightweight policies. Runtime and vendor patch installation
 remain at their owning backend's explicit lifecycle stages.
@@ -9,24 +9,34 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import RLock
 
-from vime.backends.megatron_support import MegatronSupport
+from vime.backends.megatron_integration import MegatronIntegration
 from vime.backends.vllm_weight_transfer import WeightTransfer
-from vime.utils.device_env import DeviceEnv
+from vime.utils.device_env import DeviceEnv, _SelectedDeviceEnv
 
 
 @dataclass(frozen=True)
-class Support:
+class PlatformIntegration:
+    """Process, training and transfer implementations for one selected platform.
+
+    Device selection and device operations stay in ``accelerator``. Factories
+    construct these components; their methods run at the owning workflow stage.
+    """
+
     env: DeviceEnv
-    megatron: MegatronSupport
+    megatron: MegatronIntegration
     weight_transfer: WeightTransfer
 
     def validate(self) -> None:
-        for name, expected in (("env", DeviceEnv), ("megatron", MegatronSupport), ("weight_transfer", WeightTransfer)):
+        for name, expected in (
+            ("env", DeviceEnv),
+            ("megatron", MegatronIntegration),
+            ("weight_transfer", WeightTransfer),
+        ):
             if not isinstance(getattr(self, name), expected):
-                raise TypeError(f"Support.{name} must explicitly provide {expected.__name__}")
+                raise TypeError(f"PlatformIntegration.{name} must explicitly provide {expected.__name__}")
         # Catch a stale lifecycle signature before partially installing patches.
         inspect.signature(self.megatron.before_import).bind()
         inspect.signature(self.megatron.after_args).bind(object())
@@ -48,11 +58,11 @@ _DEFAULT_MODULES = {"npu": "vime_plugins.ascend"}
 # These are the pre-existing main implementations, explicitly using its defaults.
 _DEFAULT_COMPATIBLE = frozenset({"cuda", "musa", "supa"})
 _lock = RLock()
-_selected: tuple[tuple[str, str | None], Support] | None = None
+_selected: tuple[tuple[str, str | None], PlatformIntegration] | None = None
 _building = False
 
 
-def current_support() -> Support:
+def current_integration() -> PlatformIntegration:
     from vime.utils import accelerator
 
     global _selected, _building
@@ -63,45 +73,44 @@ def current_support() -> Support:
     with _lock:
         if _selected is not None:
             if _selected[0] != key:
-                raise RuntimeError("Accelerator support cannot change after assembly; start a new process")
+                raise RuntimeError("Platform integration cannot change after assembly; start a new process")
             return _selected[1]
         if _building:
-            raise RuntimeError("Recursive support assembly: factories must not query current_support()")
+            raise RuntimeError(
+                "Recursive platform integration assembly: factories must not query current_integration()"
+            )
         _building = True
         try:
             if module_path is not None:
                 try:
                     module = importlib.import_module(module_path)
                 except ImportError as exc:
-                    raise RuntimeError(f"Accelerator {name!r} needs support package {module_path}: {exc}") from exc
-                factory = getattr(module, "build_support", None)
+                    raise RuntimeError(
+                        f"Accelerator {name!r} needs platform integration package {module_path}: {exc}"
+                    ) from exc
+                factory = getattr(module, "build_integration", None)
                 if not callable(factory):
-                    raise TypeError(f"Support package {module_path} must define build_support()")
-                support = factory()
+                    raise TypeError(f"Platform integration module {module_path} must define build_integration()")
+                integration = factory()
             elif name in _DEFAULT_COMPATIBLE:
-                support = Support(DeviceEnv(), MegatronSupport(), WeightTransfer())
+                integration = PlatformIntegration(DeviceEnv(), MegatronIntegration(), WeightTransfer())
             else:
                 raise RuntimeError(
-                    f"Accelerator {name!r} requires complete support; configure VIME_PLUGINS with its module. "
+                    f"Accelerator {name!r} requires complete platform integration; configure VIME_PLUGINS with its module. "
                     "An empty value only permits standalone device APIs, not training or serving."
                 )
-            if not isinstance(support, Support):
-                raise TypeError("build_support() must return a complete Support value")
-            support.validate()
-            _selected = (key, support)
-            return support
+            if not isinstance(integration, PlatformIntegration):
+                raise TypeError("build_integration() must return a complete PlatformIntegration value")
+            integration.validate()
+            integration = replace(integration, env=_SelectedDeviceEnv(integration.env, name, module_path or ""))
+            _selected = (key, integration)
+            return integration
         finally:
             _building = False
 
 
-def reset_support() -> None:
+def reset_integration() -> None:
     """Test isolation only. Does not undo installed third-party patches."""
     global _selected
     with _lock:
         _selected = None
-
-
-def current_support_module() -> str:
-    """Pin the resolved factory in child processes, including default bindings."""
-    current_support()
-    return _selected[0][1] or ""

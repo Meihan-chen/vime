@@ -30,6 +30,6 @@ class WeightTransfer:
 
 
 def current() -> WeightTransfer:
-    from vime.utils.support import current_support
+    from vime.utils.platform_integration import current_integration
 
-    return current_support().weight_transfer
+    return current_integration().weight_transfer

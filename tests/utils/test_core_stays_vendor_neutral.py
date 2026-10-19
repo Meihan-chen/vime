@@ -91,7 +91,8 @@ def test_core_tree_code_names_no_vendor():
     offenders: list[str] = []
     for path in _core_sources():
         for lineno, text in _code_strings_and_names(
-            path.read_text(encoding="utf-8"), binding_file=path.relative_to(REPO_ROOT) == Path("vime/utils/support.py")
+            path.read_text(encoding="utf-8"),
+            binding_file=path.relative_to(REPO_ROOT) == Path("vime/utils/platform_integration.py"),
         ):
             if word := _vendor_word(text):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {word!r} in {text!r}")

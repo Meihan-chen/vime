@@ -12,7 +12,7 @@ from megatron.core import mpu
 from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig, AutoTokenizer
 
-from vime.backends.megatron_support import current as current_megatron_support
+from vime.backends.megatron_integration import current as current_megatron_integration
 from vime.data.tensor import TensorRef
 from vime.observability import train_data_utils, train_metric_utils
 from vime.observability.logging_utils import init_tracking
@@ -82,7 +82,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
-        current_megatron_support().after_args(args)
+        current_megatron_integration().after_args(args)
         if is_megatron_main_rank():
             init_tracking(args, primary=False, role=role)
 
@@ -97,12 +97,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
         dist.barrier(group=get_gloo_group())
 
-        with current_megatron_support().training_region(args.offload_train):
+        with current_megatron_integration().training_region(args.offload_train):
             self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
                 args, role
             )
             if args.offload_train:
-                current_megatron_support().initialize_optimizer_state(self.optimizer)
+                current_megatron_integration().initialize_optimizer_state(self.optimizer)
 
         vpp_size = mpu.get_virtual_pipeline_model_parallel_world_size() or 1
         if vpp_size > 1:
@@ -673,7 +673,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 # Clear connection markers only after every rank is connected.
                 ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
 
-        offload_policy = current_megatron_support()
+        offload_policy = current_megatron_integration()
         with (
             torch_memory_saver.disable()
             if (self.args.offload_train and offload_policy.supports_disable)

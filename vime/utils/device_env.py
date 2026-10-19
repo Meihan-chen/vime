@@ -98,7 +98,7 @@ class _SelectedDeviceEnv(DeviceEnv):
         required = {"VIME_ACCELERATOR": self.name, "VIME_PLUGINS": self.module}
         for key, value in required.items():
             if key in result and result[key] != value:
-                raise ValueError(f"Child {key} must match the selected accelerator support")
+                raise ValueError(f"Child {key} must match the selected platform integration")
             result[key] = value
         return result
 
@@ -121,8 +121,6 @@ class _SelectedDeviceEnv(DeviceEnv):
 
 
 def current() -> DeviceEnv:
-    from vime.utils import accelerator
-    from vime.utils.support import current_support, current_support_module
+    from vime.utils.platform_integration import current_integration
 
-    support = current_support()
-    return _SelectedDeviceEnv(support.env, accelerator.describe_accelerator().name, current_support_module())
+    return current_integration().env

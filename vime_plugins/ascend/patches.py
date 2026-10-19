@@ -1,6 +1,6 @@
 """Patches that have to be installed at a specific point during startup.
 
-NpuMegatronSupport calls these functions at fixed Megatron lifecycle stages.
+AscendMegatronIntegration calls these functions at fixed Megatron lifecycle stages.
 """
 
 from __future__ import annotations

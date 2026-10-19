@@ -2272,9 +2272,9 @@ def vime_validate_args(args):
         args.offload_train = True
 
     if args.offload_train:
-        from vime.backends.megatron_support import current as current_megatron_support
+        from vime.backends.megatron_integration import current as current_megatron_integration
 
-        if current_megatron_support().supports_buffer_cpu_backup_disable:
+        if current_megatron_integration().supports_buffer_cpu_backup_disable:
             args.disable_grad_buffers_cpu_backup = True
             args.disable_param_buffers_cpu_backup = True
 

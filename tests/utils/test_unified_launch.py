@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 import torch
 
-from vime.utils import accelerator, support
+from vime.utils import accelerator, platform_integration
 from vime.utils.external_utils import command_utils as commands
 from vime.utils.external_utils.launch import launch_inputs, shell_exports
 
@@ -16,7 +16,7 @@ from vime.utils.external_utils.launch import launch_inputs, shell_exports
 @pytest.fixture
 def launch_case(monkeypatch):
     monkeypatch.setattr(accelerator, "_ACCELERATOR", None)
-    monkeypatch.setattr(support, "_selected", None)
+    monkeypatch.setattr(platform_integration, "_selected", None)
     monkeypatch.delenv("VIME_PLUGINS", raising=False)
     monkeypatch.setenv("VIME_ACCELERATOR", "cuda")
     monkeypatch.setenv("VIME_SCRIPT_EXTERNAL_RAY", "0")
@@ -111,7 +111,7 @@ def test_conflicting_child_support_rejected_before_start(launch_case, key, value
 
 @pytest.mark.unit
 def test_custom_resource_with_empty_environment_still_uses_common_lifecycle(launch_case, monkeypatch):
-    from vime.backends.megatron_support import MegatronSupport
+    from vime.backends.megatron_integration import MegatronIntegration
     from vime.backends.vllm_weight_transfer import WeightTransfer
     from vime.utils.device_env import DeviceEnv
 
@@ -127,7 +127,9 @@ def test_custom_resource_with_empty_environment_still_uses_common_lifecycle(laun
     monkeypatch.setattr(accelerator, "_REGISTRY", accelerator._REGISTRY.copy())
     accelerator.register_accelerator("third", Third, lambda: False)
     module = ModuleType("third_support")
-    module.build_support = lambda: support.Support(EmptyEnv(), MegatronSupport(), WeightTransfer())
+    module.build_integration = lambda: platform_integration.PlatformIntegration(
+        EmptyEnv(), MegatronIntegration(), WeightTransfer()
+    )
     monkeypatch.setitem(sys.modules, module.__name__, module)
     monkeypatch.setenv("VIME_ACCELERATOR", "third")
     monkeypatch.setenv("VIME_PLUGINS", module.__name__)

@@ -4,7 +4,7 @@ from contextlib import nullcontext
 from typing import Any
 
 
-class MegatronSupport:
+class MegatronIntegration:
     """Default training behavior, with explicit installation and allocation stages."""
 
     supports_disable = True
@@ -26,7 +26,7 @@ class MegatronSupport:
         pass
 
 
-def current() -> MegatronSupport:
-    from vime.utils.support import current_support
+def current() -> MegatronIntegration:
+    from vime.utils.platform_integration import current_integration
 
-    return current_support().megatron
+    return current_integration().megatron

@@ -371,8 +371,8 @@ def reset_accelerator() -> None:
     global _ACCELERATOR
     with _SELECTION_LOCK:
         _ACCELERATOR = None
-        if (support := sys.modules.get("vime.utils.support")) is not None:
-            support.reset_support()
+        if (platform_integration := sys.modules.get("vime.utils.platform_integration")) is not None:
+            platform_integration.reset_integration()
 
 
 def _backend() -> Accelerator:

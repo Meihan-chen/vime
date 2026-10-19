@@ -4,10 +4,10 @@ from contextlib import nullcontext
 from threading import RLock
 from typing import Any
 
-from vime.backends.megatron_support import MegatronSupport
+from vime.backends.megatron_integration import MegatronIntegration
 
 
-class NpuMegatronSupport(MegatronSupport):
+class AscendMegatronIntegration(MegatronIntegration):
     supports_disable = False
     supports_buffer_cpu_backup_disable = False
 

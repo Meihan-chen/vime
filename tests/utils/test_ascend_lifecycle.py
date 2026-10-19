@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from vime_plugins.ascend import patches
-from vime_plugins.ascend.training import NpuMegatronSupport
+from vime_plugins.ascend.training import AscendMegatronIntegration
 
 
 @pytest.mark.unit
@@ -35,7 +35,7 @@ def test_cached_adaptor_does_not_skip_our_attention_patch(monkeypatch):
 def test_unsupported_buffer_flags_fail_before_patch_mutation(monkeypatch, flag):
     monkeypatch.setattr(patches, "after_megatron_args", lambda _: pytest.fail("must reject first"))
     with pytest.raises(ValueError, match="unsupported"):
-        NpuMegatronSupport().after_args(SimpleNamespace(**{flag: True}))
+        AscendMegatronIntegration().after_args(SimpleNamespace(**{flag: True}))
 
 
 @pytest.mark.unit
@@ -44,7 +44,7 @@ def test_argument_patch_failure_requires_a_new_process(monkeypatch):
         raise LookupError("partial mutation")
 
     monkeypatch.setattr(patches, "after_megatron_args", fail)
-    instance = NpuMegatronSupport()
+    instance = AscendMegatronIntegration()
     with pytest.raises(LookupError, match="partial mutation"):
         instance.after_args(SimpleNamespace())
     with pytest.raises(RuntimeError, match="restart"):
@@ -58,15 +58,15 @@ def test_checkpoint_validation_stays_on_and_escape_hatch_is_explicit(monkeypatch
 
     planner = SimpleNamespace(_validate_global_plan=original)
     monkeypatch.delenv("VIME_NPU_SKIP_CHECKPOINT_VALIDATION", raising=False)
-    NpuMegatronSupport().after_checkpoint_setup(planner)
+    AscendMegatronIntegration().after_checkpoint_setup(planner)
     assert planner._validate_global_plan is original
     assert planner._validate_global_plan({}, {}) is False
     monkeypatch.setenv("VIME_NPU_SKIP_CHECKPOINT_VALIDATION", "1")
-    NpuMegatronSupport().after_checkpoint_setup(planner)
+    AscendMegatronIntegration().after_checkpoint_setup(planner)
     assert planner._validate_global_plan({}, {}) is True
     assert "disables checkpoint shard integrity" in caplog.text
     with pytest.raises(RuntimeError, match="target .* missing"):
-        NpuMegatronSupport().after_checkpoint_setup(SimpleNamespace())
+        AscendMegatronIntegration().after_checkpoint_setup(SimpleNamespace())
 
 
 @pytest.mark.unit
@@ -121,10 +121,10 @@ def test_empty_visible_mask_and_manager_only_host_do_not_bootstrap(monkeypatch):
 @pytest.mark.parametrize("backend", ["cuda", "npu"])
 @pytest.mark.parametrize("options", [{"colocate": True}, {"offload_train": True}, {"advantage_estimator": "ppo"}])
 def test_real_argument_validation_keeps_supported_offload_policy(monkeypatch, backend, options):
-    from vime.utils import accelerator, support
+    from vime.utils import accelerator, platform_integration
 
     monkeypatch.setattr(accelerator, "_ACCELERATOR", None)
-    monkeypatch.setattr(support, "_selected", None)
+    monkeypatch.setattr(platform_integration, "_selected", None)
     monkeypatch.setenv("VIME_ACCELERATOR", backend)
     monkeypatch.delenv("VIME_PLUGINS", raising=False)
     path = Path(__file__).resolve().parents[1] / "test_megatron_argument_validation.py"
@@ -139,5 +139,5 @@ def test_real_argument_validation_keeps_supported_offload_policy(monkeypatch, ba
     if backend == "npu":
         calls = []
         monkeypatch.setattr(patches, "after_megatron_args", calls.append)
-        support.current_support().megatron.after_args(args)
+        platform_integration.current_integration().megatron.after_args(args)
         assert calls == [args]
