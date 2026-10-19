@@ -236,6 +236,8 @@ def test_connect_replaces_existing_trainer(update_module, monkeypatch):
     old_trainer = RecordingTrainer(object())
     updater._trainer = old_trainer
     engine = RecordingEngine()
+    old_engine = RecordingEngine()
+    updater.rollout_engines = [old_engine]
     created = []
 
     def create_trainer(client, source, gpu_counts):
@@ -246,7 +248,8 @@ def test_connect_replaces_existing_trainer(update_module, monkeypatch):
     updater.connect_rollout_engines([engine], object(), engine_gpu_counts=[4])
 
     assert old_trainer.shutdown_calls == 1
-    assert len(engine.destroy_weights_update_group.calls) == 1
+    assert len(old_engine.destroy_weights_update_group.calls) == 1
+    assert engine.destroy_weights_update_group.calls == []
     assert created[0][1:] == (updater._source, [4])
     assert updater._trainer is not old_trainer
 

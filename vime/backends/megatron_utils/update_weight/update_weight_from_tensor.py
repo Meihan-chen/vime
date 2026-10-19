@@ -138,6 +138,7 @@ class UpdateWeightFromTensor:
         self._ipc_engine = None
         self._expert_transfer_plan = []
         self._native_trainers = []
+        self._distributed_rollout_engines = []
 
     def connect_rollout_engines(
         self,
@@ -173,11 +174,14 @@ class UpdateWeightFromTensor:
         self.rollout_engines = list(rollout_engines[:colocate_engine_nums])
         distributed_rollout_engines = list(rollout_engines[colocate_engine_nums:])
         for trainer in self._native_trainers:
-            if trainer.init_info_cls.backend == "nccl":
-                disconnect_rollout_engines_from_distributed(trainer, distributed_rollout_engines)
+            if current_weight_transfer().requires_remote_cleanup(trainer):
+                disconnect_rollout_engines_from_distributed(
+                    trainer, getattr(self, "_distributed_rollout_engines", distributed_rollout_engines)
+                )
             else:
                 trainer.shutdown()
         self._native_trainers = []
+        self._distributed_rollout_engines = distributed_rollout_engines
         use_distribute = bool(distributed_rollout_engines)
         colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
         colocate_gpu_counts = engine_gpu_counts[:colocate_engine_nums]

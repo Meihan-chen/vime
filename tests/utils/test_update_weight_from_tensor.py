@@ -233,8 +233,8 @@ def test_connect_uses_native_ipc_and_nccl_trainers(update_module, monkeypatch, b
 
     assert old_trainer.shutdown_calls == 1
     assert engines[0].destroy_weights_update_group.calls == []
-    assert len(engines[1].destroy_weights_update_group.calls) == int(backend == "nccl" and is_sender)
-    assert old_engine.destroy_weights_update_group.calls == []
+    assert engines[1].destroy_weights_update_group.calls == []
+    assert len(old_engine.destroy_weights_update_group.calls) == int(backend in {"nccl", "hccl"} and is_sender)
     assert len(updater._native_trainers) == 2
     assert ipc_created[0][0].packed is True
     assert ipc_created[0][2] is updater._source
