@@ -176,7 +176,9 @@ def execute(torch_dist_checkpoint=None):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix=f"{MODEL_NAME}_torch_dist_") as checkpoint_root:
+    checkpoint_tmp_root = Path(TEST_ROOT) / "tmp"
+    checkpoint_tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"{MODEL_NAME}_torch_dist_", dir=checkpoint_tmp_root) as checkpoint_root:
         checkpoint = prepare(
             checkpoint_root,
             torch_dist_ref_load=os.environ.get("VIME_TEST_TORCH_DIST_REF_LOAD", "1") == "1",
@@ -187,4 +189,5 @@ def main():
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("VIME_ACCELERATOR", "npu")
     main()

@@ -156,22 +156,16 @@ VIME_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." &>/dev/null && pwd)"
 MODEL_ARGS_FILE=$(echo "$MODEL_NAME" | sed 's/-Instruct//g; s/-Thinking//g; s/Qwen3-VL-/qwen3-/g; s/-2B/-1.7B/g')
 MODEL_ARGS_ROTARY_BASE=5000000 source "${VIME_DIR}/scripts/models/${MODEL_ARGS_FILE}.sh"
 
-pkill -9 -f '[v]llm serve|VLL[M]::' || true
-if [ "$USE_EXTERNAL_RAY" = "0" ]; then
-   ray stop --force || true
-   pkill -9 ray || true
-fi
-pkill -9 vime || true
-pkill -9 redis || true
-
 export MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
-if [ "$USE_EXTERNAL_RAY" = "0" ]; then
+if [ "$USE_EXTERNAL_RAY" = "0" ] && ! ray status >/dev/null 2>&1; then
    ray start --head --num-gpus 0 --resources "{\"NPU\": ${REQUIRED_NPUS}}" --node-ip-address "$MASTER_ADDR" --disable-usage-stats \
       --dashboard-host=0.0.0.0 --dashboard-port=8265
 fi
 
 RUNTIME_ENV_KEYS=(
+   VIME_ACCELERATOR
+   VIME_PLUGINS
    CUDA_DEVICE_MAX_CONNECTIONS
    RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
    PYTHONPATH

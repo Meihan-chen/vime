@@ -11,9 +11,18 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def native():
     pytest.importorskip("megatron.core")
+    from torch.utils.checkpoint import DefaultDeviceType
+
     from vime_plugins.models import qwen3_vl
 
-    return qwen3_vl
+    # These tests use CPU tensors. Installed vendor libraries may change the
+    # checkpoint fallback device even when no accelerator tensor is involved.
+    previous = DefaultDeviceType.get_device_type()
+    DefaultDeviceType.set_device_type("cpu")
+    try:
+        yield qwen3_vl
+    finally:
+        DefaultDeviceType.set_device_type(previous)
 
 
 @pytest.fixture

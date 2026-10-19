@@ -1,23 +1,17 @@
 #!/bin/bash
 set -ex
+
+export VIME_ACCELERATOR=npu
+export VIME_PLUGINS=${VIME_PLUGINS-vime_plugins.ascend}
 ulimit -u 65535
 
-# cleanup
-pkill -9 -f "vllm serve" 2>/dev/null || true
-sleep 2
-npu-smi info 2>/dev/null | grep rayWorker | awk '{print $4}' | xargs -r kill -9 2>/dev/null || true
-sleep 3
-
-# Ray isolation: independent temp-dir, ports, and cleanup
+# Ray layout used when starting a new head; existing sessions are preserved.
 export RAY_TMPDIR=/tmp/ray_vime_npu_search_r1
 export RAY_PORT=6379
 export RAY_DASHBOARD_PORT=8265
 export RAY_AGENT_PORT=52378
 unset RAY_ADDRESS RAY_REDIS_ADDRESS
 
-ray stop --force 2>/dev/null || true
-rm -rf "${RAY_TMPDIR}"
-sleep 2
 
 project_name="vime"
 exp_name="qwen3-4b-search-r1"
@@ -38,7 +32,7 @@ export PYTHONPATH="${VIME_DIR}/examples/search-r1:/root/Megatron-LM:/root/vllm:/
 export PYTHONUNBUFFERED=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
 export CUDA_DEVICE_MAX_CONNECTIONS=1
-export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 export HCCL_HOST_SOCKET_PORT_RANGE=60000-60050
 export HCCL_NPU_SOCKET_PORT_RANGE=61000-61050
 export HCCL_CONNECT_TIMEOUT=7200
@@ -160,21 +154,25 @@ CUSTOM_ARGS=(
 
 # launch the master node of ray in container
 unset https_proxy http_proxy proxy
-ray start --head \
-    --temp-dir="${RAY_TMPDIR}" \
-    --port="${RAY_PORT}" \
-    --dashboard-port="${RAY_DASHBOARD_PORT}" \
-    --dashboard-agent-listen-port="${RAY_AGENT_PORT}" \
-    --node-ip-address 127.0.0.1 \
-    --num-gpus 0 \
-    --resources "{\"NPU\": $NUM_NPUS}" \
-    --disable-usage-stats \
-    --dashboard-host=0.0.0.0
+if [[ "${VIME_SCRIPT_EXTERNAL_RAY:-0}" != "1" && "${VIME_SCRIPT_EXTERNAL_RAY:-0}" != "true" ]] && ! ray status >/dev/null 2>&1; then
+   ray start --head \
+       --temp-dir="${RAY_TMPDIR}" \
+       --port="${RAY_PORT}" \
+       --dashboard-port="${RAY_DASHBOARD_PORT}" \
+       --dashboard-agent-listen-port="${RAY_AGENT_PORT}" \
+       --node-ip-address 127.0.0.1 \
+       --num-gpus 0 \
+       --resources "{\"NPU\": $NUM_NPUS}" \
+       --disable-usage-stats \
+       --dashboard-host=0.0.0.0
+fi
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON=$(cat << EOF
 {
   "env_vars": {
+    "VIME_ACCELERATOR": "npu",
+    "VIME_PLUGINS": "${VIME_PLUGINS}",
     "PYTHONPATH": "${VIME_DIR}/examples/search-r1:/root/Megatron-LM:/root/vllm:/root/vllm-ascend:${VIME_DIR}:/root/MegatronAdaptor:/root/TransformerEngineNPU:/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:/usr/local/Ascend/ascend-toolkit/latest/tools/ms_fmk_transplt/torch_npu_bridge",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     "HCCL_HOST_SOCKET_PORT_RANGE": "60000-60050",

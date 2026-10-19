@@ -1,24 +1,15 @@
 #!/bin/bash
 
-# for rerun the task
-pkill -9 -f '[v]llm serve|VLL[M]::'
-pkill -9 -f VLLM
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
-pkill -9 redis
-
 set -ex
+
+export VIME_ACCELERATOR=npu
+export VIME_PLUGINS=${VIME_PLUGINS-vime_plugins.ascend}
 
 export PYTHONUNBUFFERED=1
 
 export SLIME_SCRIPT_TRAIN_BACKEND=megatron
 export PYTHONPATH="/root/Megatron-LM/:${PYTHONPATH:-}"
-export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
 export HCCL_HOST_SOCKET_PORT_RANGE=60000-60050
@@ -127,9 +118,12 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --num-gpus 0 --resources '{"NPU": 8}' --node-ip-address ${MASTER_ADDR} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+if [[ "${VIME_SCRIPT_EXTERNAL_RAY:-0}" != "1" && "${VIME_SCRIPT_EXTERNAL_RAY:-0}" != "true" ]] && ! ray status >/dev/null 2>&1; then
+   ray start --head --num-gpus 0 --resources '{"NPU": 8}' --node-ip-address ${MASTER_ADDR} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+fi
 
 ray job submit --address="http://127.0.0.1:8265" \
+   --runtime-env-json="$(python -c 'import json, os; print(json.dumps({"env_vars": {k: os.environ[k] for k in ("VIME_ACCELERATOR", "VIME_PLUGINS")}}))')" \
    -- python3 train.py \
    --train-backend megatron \
    --actor-num-nodes 1 \

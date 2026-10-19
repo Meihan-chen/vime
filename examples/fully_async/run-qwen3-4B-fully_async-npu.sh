@@ -1,27 +1,18 @@
 #!/bin/bash
 # Tiny end-to-end fully-async GRPO example using Qwen3-4B-Instruct on the
-# dapo-math-17k dataset. Designed to run on a single 4-GPU node in a few minutes
+# dapo-math-17k dataset. Designed to run on a single 4-NPU node
 #
 # Prerequisites:
 #   /root/models/Qwen3-4B/             (HF checkpoint)
 #   /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
 
-# clean any leftover ray/vllm
-pkill -9 -f '[v]llm serve|VLL[M]::'
-pkill -9 -f VLLM
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
-pkill -9 redis
-
 set -ex
 
+export VIME_ACCELERATOR=npu
+export VIME_PLUGINS=${VIME_PLUGINS-vime_plugins.ascend}
+
 export PYTHONUNBUFFERED=1
-export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+export ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
 export RAY_USE_UVLOOP=0 # upstream: Ray's uvloop integration has caused intermittent async actor issues.
 export CUDA_DEVICE_MAX_CONNECTIONS=1
@@ -119,14 +110,22 @@ MISC_ARGS=(
    --use-flash-attn
 )
 
-ray start --head --num-gpus 0 --resources '{"NPU": 4}' --node-ip-address 127.0.0.1 --disable-usage-stats
+# Preserve an existing cluster and its independently owned serving session.
+# VIME_SCRIPT_EXTERNAL_RAY=1/true leaves cluster management to the caller.
+EXTERNAL_RAY=${VIME_SCRIPT_EXTERNAL_RAY:-false}
+if [[ "${EXTERNAL_RAY,,}" != "1" && "${EXTERNAL_RAY,,}" != "true" ]]; then
+   if ! ray status >/dev/null 2>&1; then
+      ray start --head --num-gpus 0 --resources '{"NPU": 4}' --node-ip-address 127.0.0.1 --disable-usage-stats
+   fi
+fi
 
-# fully-async splits actor / rollout onto disjoint GPUs (no colocation).
+# fully-async splits actor / rollout onto disjoint NPUs (no colocation).
 ACTOR_GPUS=2
 ROLLOUT_GPUS=2
 
 ray job submit --address="http://127.0.0.1:8265" \
-   -- python3 train_async.py \
+   --runtime-env-json="$(python -c 'import json, os; print(json.dumps({"env_vars": {k: os.environ[k] for k in ("VIME_ACCELERATOR", "VIME_PLUGINS")}}))')" \
+   -- python3 train.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node "${ACTOR_GPUS}" \
    --rollout-num-gpus "${ROLLOUT_GPUS}" \
