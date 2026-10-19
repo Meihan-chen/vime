@@ -167,8 +167,9 @@ update_vime_code() {
 
     if [ -n "${BUILDKITE_COMMIT:-}" ]; then
         echo "INFO: Fetching and checking out commit ${BUILDKITE_COMMIT}"
-        git -C "$VIME_DIR" fetch origin "${BUILDKITE_COMMIT}"
-        git -C "$VIME_DIR" checkout "${BUILDKITE_COMMIT}"
+        git -C "$VIME_DIR" fetch "${VIME_REPOSITORY:-origin}" "${BUILDKITE_COMMIT}"
+        git -C "$VIME_DIR" checkout --detach FETCH_HEAD
+        test "$(git -C "$VIME_DIR" rev-parse HEAD)" = "${BUILDKITE_COMMIT}"
     else
         echo "INFO: BUILDKITE_COMMIT not set, skipping code update"
     fi
@@ -204,6 +205,10 @@ main() {
         echo "ERROR: Build a patch-state-enabled NPU image before running this commit." >&2
         return 1
     fi
+
+    # A patch diff cannot upgrade the vendor base. Check before reverting anything.
+    python3 "${VIME_NPU_PATCH_SOURCE_ROOT}/tools/check_npu_stack.py" \
+        --manifest "${VIME_NPU_PATCH_SOURCE_ROOT}/docker/npu_patch/versions.json"
 
     echo "=== Step 3: Reconcile image patches with current VIME patches ==="
     reconcile_series "$old_series" "$VIME_NPU_PATCH_STATE_DIR" "$new_series" "$VIME_NPU_PATCH_SOURCE_ROOT"

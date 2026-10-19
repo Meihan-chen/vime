@@ -28,6 +28,7 @@ BUILDKITE_SOURCE = os.environ.get("BUILDKITE_SOURCE", "")
 # (test_name, resource_class, extra_args, env_overrides[, timeout_in_minutes])
 SUITES = {
     "smk": [
+        ("test_delta_disk_weight_update.py", "npu-4", "", {}),
         ("test_qwen3_4B_npu.py", "npu-8", "", {}),
         ("test_qwen3_30B_A3B_npu.py", "npu-16", "", {}),
         ("test_qwen3_vl_8B_npu.py", "npu-8", "", {}),
@@ -81,9 +82,11 @@ def npu_step(
     timeout_in_minutes: int = 180,
 ) -> dict:
     step_env = {
+        "VIME_ACCELERATOR": "npu",
         "VIME_TEST_ENABLE_INFINITE_RUN": "false",
         "BUILDKITE_PULL_REQUEST": os.environ.get("BUILDKITE_PULL_REQUEST", "false"),
         "BUILDKITE_COMMIT": os.environ.get("BUILDKITE_COMMIT", ""),
+        "VIME_REPOSITORY": os.environ.get("VIME_REPOSITORY") or os.environ.get("BUILDKITE_REPO", ""),
         "HF_TOKEN": "${HF_TOKEN}",
         "HF_ENDPOINT": "https://hf-mirror.com",
         "ASCEND_RT_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",

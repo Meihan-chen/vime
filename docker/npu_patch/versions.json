@@ -1,0 +1,29 @@
+{
+  "base_image": "quay.io/atlas-ci/vllm-ascend:v0.30.0-e00cb64-a3",
+  "sources": {
+    "vllm": {
+      "path": "/vllm-workspace/vllm",
+      "commit": "8cc9aa5ad350f6f80cf3bebb298d410803ff75a9"
+    },
+    "vllm-ascend": {
+      "path": "/vllm-workspace/vllm-ascend",
+      "commit": "e00cb64a4469dfcd1ea8ba2d5d5e4eb2ab7bcaf1"
+    },
+    "megatron": {
+      "path": "/root/Megatron-LM",
+      "commit": "1dcf0dafa884ad52ffb243625717a3471643e087"
+    },
+    "mindspeed": {
+      "path": "/root/MindSpeed",
+      "commit": "fc63de5c48426dd019c3b3f39e65f5bdf56e4086"
+    },
+    "megatron-adaptor": {
+      "path": "/root/MegatronAdaptor",
+      "commit": "15582addff3f3d4680e350826fa70d012b475509"
+    },
+    "transformer-engine-npu": {
+      "path": "/root/TransformerEngineNPU",
+      "commit": "d743c83d060d5edc48867ecb9e93ec80d81860e4"
+    }
+  }
+}
