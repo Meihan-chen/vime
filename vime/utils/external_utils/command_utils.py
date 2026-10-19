@@ -12,7 +12,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from vime.utils import accelerator
 from vime.utils.external_utils.launch import launch_inputs, shell_exports
 from vime.utils.external_utils.typer_utils import dataclass_cli
 from vime.utils.misc import exec_command
@@ -31,10 +30,6 @@ def convert_checkpoint(
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
 ):
-    if not accelerator.describe_accelerator().supports("torch_dist_checkpoint_convert"):
-        print(f"convert_checkpoint skip on {accelerator.describe_accelerator().name} (native HF load)")
-        return
-
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
     normalized_extra_args = f" {extra_args.strip()}" if extra_args.strip() else ""
 

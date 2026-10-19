@@ -89,8 +89,6 @@ class SUPAAccelerator(TorchAccelerator):
         # Parameters are built on CPU and then moved onto the device.
         if capability == "requires_cpu_initialization":
             return True
-        if capability == "torch_dist_checkpoint_convert":
-            return True
         if capability == "amp":
             amp = getattr(self._module(), "amp", None)
             return callable(getattr(amp, "autocast", None))

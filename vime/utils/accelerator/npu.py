@@ -85,8 +85,6 @@ class NPUAccelerator(TorchAccelerator):
         if capability in {
             "cuda_int4_extension",
             "nvml_affinity",
-            # Checkpoints are loaded from HF directly rather than converted.
-            "torch_dist_checkpoint_convert",
             "vllm_fp8_utils",
             "triton_kernels",
         }:

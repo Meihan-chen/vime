@@ -38,7 +38,6 @@ class CUDAAccelerator(TorchAccelerator):
             "cuda_int4_extension",
             "vllm_fp8_utils",
             "strict_fp32_logits",
-            "torch_dist_checkpoint_convert",
             "triton_kernels",
         }:
             return True

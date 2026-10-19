@@ -155,14 +155,12 @@ def test_shell_environment_is_quoted_and_keys_validated():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("backend", ["cuda", "musa", "supa", "npu"])
-def test_checkpoint_conversion_preserves_existing_platforms(launch_case, monkeypatch, tmp_path, backend):
+@pytest.mark.parametrize("backend", ["cuda", "musa", "supa", "npu", "third"])
+def test_explicit_checkpoint_conversion_does_not_depend_on_hardware(launch_case, monkeypatch, tmp_path, backend):
     monkeypatch.setenv("VIME_ACCELERATOR", backend)
+    monkeypatch.setattr(accelerator, "describe_accelerator", lambda: pytest.fail("Conversion is a job choice"))
     commands.convert_checkpoint("test-model", "test-model", 4, dir_dst=str(tmp_path))
-    if backend == "npu":
-        assert launch_case == []
-    else:
-        assert len(launch_case) == 1
-        assert "torchrun --nproc-per-node 4" in launch_case[0]
-        assert "tools/convert_hf_to_torch_dist.py" in launch_case[0]
-        assert f"--save {tmp_path}/test-model_torch_dist" in launch_case[0]
+    assert len(launch_case) == 1
+    assert "torchrun --nproc-per-node 4" in launch_case[0]
+    assert "tools/convert_hf_to_torch_dist.py" in launch_case[0]
+    assert f"--save {tmp_path}/test-model_torch_dist" in launch_case[0]

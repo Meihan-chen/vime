@@ -98,12 +98,8 @@ def verify_checkpoints(case_dir: Path, encoding: str):
 def execute():
     for encoding in ("xor", "overwrite"):
         with tempfile.TemporaryDirectory(prefix=f"vime_delta_disk_{encoding}_") as disk_dir:
-            ref_load = (
-                TORCH_DIST_CKPT
-                if U.accelerator.describe_accelerator().supports("torch_dist_checkpoint_convert")
-                else MODEL_DIR
-            )
-            ckpt_args = f"--hf-checkpoint {shlex.quote(MODEL_DIR)} " f"--ref-load {shlex.quote(ref_load)} "
+            # prepare() explicitly creates this checkpoint on every platform.
+            ckpt_args = f"--hf-checkpoint {shlex.quote(MODEL_DIR)} " f"--ref-load {shlex.quote(TORCH_DIST_CKPT)} "
 
             rollout_args = (
                 f"--prompt-data {shlex.quote(f'{DATASET_DIR}/train.parquet')} "
