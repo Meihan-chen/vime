@@ -10,8 +10,10 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def native(monkeypatch):
-    monkeypatch.setenv("VIME_PLATFORM", "cuda")
-    pytest.importorskip("megatron.core")
+    # Guard on what the model actually imports, not on the package name: a
+    # stub megatron.core installed by an earlier test satisfies the latter
+    # and then fails at import time instead of skipping.
+    pytest.importorskip("megatron.core.tensor_parallel")
     from vime_plugins.models import qwen3_vl
 
     return qwen3_vl
