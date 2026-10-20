@@ -2,9 +2,8 @@
 
 Used only by the test and example launch utilities (`command_utils.execute_train`), not by
 vime core: a `Platform` describes one accelerator for the purpose of *launching a job* — how
-Ray advertises its devices, the device runtime env, whether torch_dist checkpoint conversion
-works, and how to construct the launch command. It adapts the core ``vime.platforms``
-selection to shell commands.
+Ray advertises its devices, the device runtime env, and how to construct the launch command.
+It adapts the core ``vime.platforms`` selection to shell commands.
 
 Imports stay stdlib-only (torch imports are lazy) so the module is unit-testable in isolation;
 the actual `exec_command` calls live in `command_utils`.
@@ -23,7 +22,6 @@ class Platform:
     name: str
     ray_args: str  # ray-start resource flags, "{n}"-templated with the device count
     env: dict = field(default_factory=dict)  # device runtime env (into runtime_env + raylet)
-    torch_dist_convert: bool = True  # False -> use native HF loading without automatic conversion
 
     def ray_start_args(self, num_devices: int) -> str:
         return self.ray_args.format(n=num_devices)
@@ -49,7 +47,6 @@ register(
         # vime requests NPU bundles, not GPU (see ray/placement_group.py), so advertise
         # the custom NPU resource rather than Ray GPU capacity.
         ray_args="--num-gpus 0 --resources '{{\"NPU\": {n}}}'",
-        torch_dist_convert=False,  # Keep HF tests unchanged; torch_dist has a separate opt-in test.
         env={
             "PYTHONPATH": (
                 "/root/Megatron-LM:/root/vime:"

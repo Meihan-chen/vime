@@ -29,11 +29,6 @@ def convert_checkpoint(
     dir_dst: str = "/root",
     hf_checkpoint: str | None = None,
 ):
-    # Platforms without automatic conversion use native HF loading by default.
-    if not current_platform().torch_dist_convert:
-        print(f"convert_checkpoint skip on {current_platform().name} (native HF load)")
-        return
-
     hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
     normalized_extra_args = f" {extra_args.strip()}" if extra_args.strip() else ""
 

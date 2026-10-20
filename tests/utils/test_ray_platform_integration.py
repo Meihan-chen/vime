@@ -20,7 +20,7 @@ def _fake_platform(ray_ops, *, is_npu=False):
         ("npu", "ASCEND_RT_VISIBLE_DEVICES", "9", "NPU"),
     ],
 )
-def test_platform_ray_accelerator_ids_and_local_mapping(
+def test_platform_ray_accelerator_ids(
     monkeypatch,
     platform_name,
     visible_env,
@@ -41,7 +41,6 @@ def test_platform_ray_accelerator_ids_and_local_mapping(
 
     assert platform.ray.resource_name == expected_resource
     assert platform.ray.accelerator_ids() == [assigned_id]
-    assert platform.ray.local_device_id() == 1
 
 
 def test_placement_group_uses_platform_ray_resource_contract(monkeypatch):
@@ -301,18 +300,55 @@ def test_rollout_engine_delegates_runtime_env_and_actor_options(monkeypatch, is_
         group.start_engines()
 
 
-def test_train_actor_uses_npu_local_device_mapping(monkeypatch):
+@pytest.mark.parametrize(
+    "visible,assigned_id,expected",
+    [
+        (None, "7", 7),
+        (None, "7.0", 7),
+        ("", "7", 7),
+        ("4,7", "4", 0),
+        ("4,7", "7", 1),
+        ("4,7", "7.0", 1),
+        ("4,7", "1", 1),
+        ("4,7", "1.0", 1),
+        ("4,7", "0", 0),
+        ("1,4", "1", 0),
+        (" 4, 7 ", "7", 1),
+        ("7,4", "7", 0),
+    ],
+)
+def test_train_actor_uses_main_mapping_for_npu(monkeypatch, visible, assigned_id, expected):
+    from vime.platforms import get_platform
+    from vime.platforms.npu import NPUAccelerator
     from vime.ray import train_actor as train_actor_module
 
-    local_device_id = Mock(return_value=5)
-    monkeypatch.setattr(
-        train_actor_module,
-        "current_platform",
-        lambda: _fake_platform(SimpleNamespace(local_device_id=local_device_id), is_npu=True),
-    )
+    monkeypatch.setattr(train_actor_module, "current_platform", lambda: get_platform("npu"))
+    monkeypatch.setattr(train_actor_module.accelerator, "_ACCELERATOR", NPUAccelerator())
+    context = SimpleNamespace(get_accelerator_ids=lambda: {"NPU": [assigned_id]})
+    monkeypatch.setattr(train_actor_module.ray, "get_runtime_context", lambda: context)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    if visible is None:
+        monkeypatch.delenv("ASCEND_RT_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", visible)
 
-    assert train_actor_module.get_local_gpu_id() == 5
-    local_device_id.assert_called_once_with()
+    assert train_actor_module.get_local_gpu_id() == expected
+
+
+@pytest.mark.parametrize("assigned_id", ["-1", "2", "8", "not-a-device", None])
+def test_train_actor_rejects_invalid_or_missing_npu_id(monkeypatch, assigned_id):
+    from vime.platforms import get_platform
+    from vime.platforms.npu import NPUAccelerator
+    from vime.ray import train_actor as train_actor_module
+
+    monkeypatch.setattr(train_actor_module, "current_platform", lambda: get_platform("npu"))
+    monkeypatch.setattr(train_actor_module.accelerator, "_ACCELERATOR", NPUAccelerator())
+    context = SimpleNamespace(get_accelerator_ids=lambda: {"NPU": [] if assigned_id is None else [assigned_id]})
+    monkeypatch.setattr(train_actor_module.ray, "get_runtime_context", lambda: context)
+    monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "4,7")
+
+    with pytest.raises(RuntimeError, match="No NPU accelerator IDs" if assigned_id is None else "not valid under"):
+        train_actor_module.get_local_gpu_id()
 
 
 def test_train_actor_keeps_main_cuda_local_device_mapping(monkeypatch):
