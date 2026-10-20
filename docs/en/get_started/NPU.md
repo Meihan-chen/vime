@@ -75,7 +75,7 @@ processes.
 | `VIME_PLUGINS=your.module` | Reads the component used by the current workflow (`env`, `megatron`, or `weight_transfer`). |
 | `VIME_PLUGINS=` | Allows standalone device APIs. NPU workflows requiring backend components fail explicitly. |
 | `VIME_NPU_PYTHONPATH`, `VIME_NPU_LD_LIBRARY_PATH` | Override the image-layout defaults for launch paths. |
-| Buffer CPU backup | NPU offload keeps the full training region backed up. Main's automatic per-buffer backup suppression is enabled only where supported. Explicit `disable_param_buffers_cpu_backup=True` or `disable_grad_buffers_cpu_backup=True` configuration is rejected on this NPU pin. |
+| Buffer CPU backup | Argument defaults match main. The pinned NPU dependency accepts `disable_param_buffers_cpu_backup` and `disable_grad_buffers_cpu_backup` but does not implement separate buffer backup suppression; NPU offload keeps the full training region backed up, as in s10. |
 
 A CPU driver can inspect device metadata, construct Ray resource/environment inputs and
 load backend definitions. Loading Megatron backend definitions still requires

@@ -28,11 +28,6 @@ class AscendMegatronIntegration(MegatronIntegration):
             self._import_state = "done"
 
     def after_args(self, args: Any) -> None:
-        # The pinned dependency accepts these flags but does not implement
-        # their per-buffer backup policy. Do not ignore explicit requests.
-        for flag in ("disable_param_buffers_cpu_backup", "disable_grad_buffers_cpu_backup"):
-            if getattr(args, flag, False):
-                raise ValueError(f"{flag}=True is unsupported by the pinned Ascend Megatron stack")
         with self._lock:
             if self._args_failed:
                 raise RuntimeError("Ascend argument patch installation failed; restart this process")

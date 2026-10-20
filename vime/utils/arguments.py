@@ -2271,6 +2271,10 @@ def vime_validate_args(args):
     if args.use_critic:
         args.offload_train = True
 
+    if args.offload_train:
+        args.disable_grad_buffers_cpu_backup = True
+        args.disable_param_buffers_cpu_backup = True
+
     if args.flush_cache_interval == 1 and args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
 

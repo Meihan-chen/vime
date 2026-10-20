@@ -55,14 +55,13 @@ using that draft must export their component objects instead.
 
 ## Dependency compatibility belongs to its backend
 
-The generic argument validator no longer imports platform or Megatron policy.
-Megatron argument validation applies main's automatic offload buffer defaults
-when `_ParamAndGradBuffer._allocate_buffer` exists, because that is the entry
-point wrapped by main's `memory.py`. This check describes the supported dependency
-implementations, not a universal hardware capability. On the pinned older NPU
-stack, keep full training-region backup; explicit unsupported buffer suppression
-still fails before argument patch mutation. Role-specific overrides are applied
-after the automatic defaults, as on main.
+Both generic and Megatron argument validation retain main's behavior, including
+the automatic buffer flags under `if args.offload_train`. The pinned NPU
+dependency accepts those flags but does not implement separate param/grad
+backup suppression. It keeps the full training region backed up, as in s10.
+The integration does not add a rejection or inspect a private allocation method
+to change argument defaults. Per-buffer suppression remains a dependency feature
+gap; NPU offload acceptance must measure the actual memory and transfer behavior.
 
 The latest s10 cleanup removes FC1 partition-axis overrides and stale TMS/NZ
 environment settings. This branch follows it and leaves the shared weight
@@ -98,7 +97,7 @@ This avoids counting synchronized main code as new NPU work.
 | HCCL needs remote cleanup in mixed IPC/distributed mode | Both NCCL and HCCL use paired shutdown. Reconnection cleans up the engines attached to the old trainer before replacing the binding. |
 | Retained serving and unified training entrypoint | Keep M10 `train.py`, Ray liveness/reuse, callback, submission switch and ROCm path. NPU launch code supplies inputs only. Shell examples stop killing sessions automatically. |
 | New serving source pins and APIs | Carry N10's reviewed standalone vLLM and vLLM-Ascend patches: HCCL close, disk delta, sampling metadata, GDN and serving lifecycle changes. |
-| Pinned NPU Megatron differs from main's vendor pin | Carry the standalone Megatron patch; leave GPU patches untouched. Resolve automatic per-buffer defaults inside Megatron argument validation using the dependency allocation entry point. NPU retains full training-region backup; explicitly requesting unsupported suppression is rejected. |
+| Pinned NPU Megatron differs from main's vendor pin | Carry the standalone Megatron patch; leave GPU patches and main's argument defaults untouched. NPU retains full training-region backup; the pinned dependency does not implement separate param/grad backup suppression. |
 | MindSpeed / MegatronAdaptor patch bytes | Reuse unchanged N8/N10 patches. Runtime installation now has explicit stages and failures. |
 | Image and large-model test changes | Carry N10 constraints, Rust/router build, temporary checkpoint paths and test changes; replace stale `VIME_PLATFORM` uses. Require a fetched source SHA and verify patch/base identity. |
 

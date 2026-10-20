@@ -31,14 +31,6 @@ def test_cached_adaptor_does_not_skip_our_attention_patch(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("flag", ["disable_param_buffers_cpu_backup", "disable_grad_buffers_cpu_backup"])
-def test_unsupported_buffer_flags_fail_before_patch_mutation(monkeypatch, flag):
-    monkeypatch.setattr(patches, "after_megatron_args", lambda _: pytest.fail("must reject first"))
-    with pytest.raises(ValueError, match="unsupported"):
-        AscendMegatronIntegration().after_args(SimpleNamespace(**{flag: True}))
-
-
-@pytest.mark.unit
 def test_argument_patch_failure_requires_a_new_process(monkeypatch):
     def fail(_):
         raise LookupError("partial mutation")
@@ -102,7 +94,7 @@ def test_empty_visible_mask_and_manager_only_host_do_not_bootstrap(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.parametrize("backend", ["cuda", "npu"])
 @pytest.mark.parametrize("options", [{"colocate": True}, {"offload_train": True}, {"advantage_estimator": "ppo"}])
-def test_real_argument_validation_keeps_supported_offload_policy(monkeypatch, backend, options):
+def test_real_argument_validation_keeps_main_offload_defaults(monkeypatch, backend, options):
     from vime.utils import accelerator
 
     monkeypatch.setattr(accelerator, "_ACCELERATOR", None)
@@ -114,21 +106,9 @@ def test_real_argument_validation_keeps_supported_offload_policy(monkeypatch, ba
     spec.loader.exec_module(helpers)
     module = helpers.load_vime_arguments_module(monkeypatch)
     args, _ = module.vime_validate_args(helpers.make_vime_validate_args(**options))
-    # The generic validator must not load backend components. The owning
-    # backend resolves automatic defaults using its dependency's entry point.
-    backend_args = helpers.load_arguments_module(monkeypatch)
-    buffers = ModuleType("megatron.core.distributed.param_and_grad_buffer")
-    attrs = {"_allocate_buffer": lambda *a: None} if backend == "cuda" else {}
-    buffers._ParamAndGradBuffer = type("Buffer", (), attrs)
-    monkeypatch.setitem(sys.modules, buffers.__name__, buffers)
-    args.moe_token_dispatcher_type = "alltoall"
-    args.pipeline_model_parallel_size = 1
-    args.decoder_first_pipeline_num_layers = None
-    args.decoder_last_pipeline_num_layers = None
-    backend_args.validate_args(args)
     assert args.offload_train is True
     for field in ("disable_param_buffers_cpu_backup", "disable_grad_buffers_cpu_backup"):
-        assert getattr(args, field, False) is (backend == "cuda")
+        assert getattr(args, field) is True
     if backend == "npu":
         calls = []
         monkeypatch.setattr(patches, "after_megatron_args", calls.append)
