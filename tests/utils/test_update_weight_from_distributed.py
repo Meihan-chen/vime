@@ -234,6 +234,8 @@ def test_connect_replaces_existing_trainer(update_module, monkeypatch):
     updater._source = object()
     old_trainer = RecordingTrainer(object())
     updater._trainer = old_trainer
+    old_engine = RecordingEngine()
+    updater.rollout_engines = [old_engine]
     engine = RecordingEngine()
     created = []
 
@@ -245,9 +247,14 @@ def test_connect_replaces_existing_trainer(update_module, monkeypatch):
     updater.connect_rollout_engines([engine], object(), engine_gpu_counts=[4])
 
     assert old_trainer.shutdown_calls == 1
-    assert len(engine.destroy_weights_update_group.calls) == 1
+    # The teardown belongs to the group being replaced. Sending it to the
+    # incoming engine would both leave the old group connected and tear down
+    # a group the new engine never joined.
+    assert len(old_engine.destroy_weights_update_group.calls) == 1
+    assert len(engine.destroy_weights_update_group.calls) == 0
     assert created[0][1:] == (updater._source, [4])
     assert updater._trainer is not old_trainer
+    assert updater.rollout_engines == [engine]
 
 
 @pytest.mark.unit
