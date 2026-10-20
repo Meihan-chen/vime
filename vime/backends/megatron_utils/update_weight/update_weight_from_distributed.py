@@ -59,8 +59,8 @@ class UpdateWeightFromDistributed:
         engine_parallel_configs: Sequence[Mapping[str, object]] | None = None,
     ) -> None:
         del rollout_engine_lock, engine_gpu_offsets, engine_parallel_configs
-        self.rollout_engines = list(rollout_engines)
         self.disconnect_rollout_engines()
+        self.rollout_engines = list(rollout_engines)
         engine_gpu_counts = list(
             engine_gpu_counts or [self.args.rollout_num_gpus_per_engine] * len(self.rollout_engines)
         )
@@ -139,7 +139,7 @@ def connect_rollout_engines_from_distributed(
     engine_gpu_counts: Sequence[int],
 ):
     from vllm.distributed.weight_transfer.factory import WeightTransferTrainerFactory
-    from vllm.distributed.weight_transfer.nccl_engine import NCCLTrainerInitInfo
+    from vime.backends.vllm_weight_transfer import current as current_weight_transfer
 
     rendezvous = [None]
     if dist.get_rank() == 0:
@@ -149,7 +149,8 @@ def connect_rollout_engines_from_distributed(
     dist.broadcast_object_list(rendezvous, src=0, group=get_gloo_group())
     master_address, master_port = rendezvous[0]
     return WeightTransferTrainerFactory.trainer_init(
-        NCCLTrainerInitInfo(
+        current_weight_transfer().init_info(
+            "distributed",
             master_address=master_address,
             master_port=master_port,
             world_size=sum(engine_gpu_counts) + 1,

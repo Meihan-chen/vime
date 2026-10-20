@@ -57,6 +57,8 @@ def reset_accelerator_selection(monkeypatch):
     bootstrap_checked = accelerator._MUSA_BOOTSTRAP_CHECKED
     supa_imported = accelerator._SUPA_RUNTIME_IMPORTED
     supa_bootstrap_checked = accelerator._SUPA_BOOTSTRAP_CHECKED
+    npu_imported = accelerator._NPU_RUNTIME_IMPORTED
+    npu_bootstrap_checked = accelerator._NPU_BOOTSTRAP_CHECKED
     for name in (
         "VIME_ACCELERATOR",
         "MUSA_VISIBLE_DEVICES",
@@ -64,6 +66,8 @@ def reset_accelerator_selection(monkeypatch):
         "CUDA_VISIBLE_DEVICES",
         "SUPA_VISIBLE_DEVICES",
         "BIREN_HOME",
+        "ASCEND_RT_VISIBLE_DEVICES",
+        "ASCEND_HOME_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
     accelerator._REGISTRY.clear()
@@ -72,6 +76,8 @@ def reset_accelerator_selection(monkeypatch):
     accelerator._MUSA_BOOTSTRAP_CHECKED = False
     accelerator._SUPA_RUNTIME_IMPORTED = False
     accelerator._SUPA_BOOTSTRAP_CHECKED = False
+    accelerator._NPU_RUNTIME_IMPORTED = False
+    accelerator._NPU_BOOTSTRAP_CHECKED = False
     yield
     accelerator._REGISTRY.clear()
     accelerator._REGISTRY.update(registry)
@@ -80,6 +86,8 @@ def reset_accelerator_selection(monkeypatch):
     accelerator._MUSA_BOOTSTRAP_CHECKED = bootstrap_checked
     accelerator._SUPA_RUNTIME_IMPORTED = supa_imported
     accelerator._SUPA_BOOTSTRAP_CHECKED = supa_bootstrap_checked
+    accelerator._NPU_RUNTIME_IMPORTED = npu_imported
+    accelerator._NPU_BOOTSTRAP_CHECKED = npu_bootstrap_checked
 
 
 @pytest.mark.unit
@@ -122,9 +130,50 @@ def test_selected_musa_bootstraps_patch_once(monkeypatch):
 def test_cpu_only_initialization_does_not_require_an_accelerator(monkeypatch):
     monkeypatch.setattr(accelerator, "is_musa_available", lambda: False)
     monkeypatch.setattr(accelerator, "is_supa_available", lambda: False)
+    monkeypatch.setattr(accelerator, "is_npu_available", lambda: False)
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: False)
 
     assert accelerator.initialize_accelerator() is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("backend", ["cuda", "musa", "supa", "npu", "fake"])
+def test_import_prepares_runtime_without_requiring_local_hardware(monkeypatch, backend):
+    imports = []
+    monkeypatch.setenv("VIME_ACCELERATOR", backend)
+    for check in ("_cuda_available", "is_musa_available", "is_supa_available", "is_npu_available", "_has_npu_device"):
+        monkeypatch.setattr(accelerator, check, lambda: False)
+    monkeypatch.setattr(accelerator, "_import_musa_patch", lambda: imports.append("musa") or True)
+    monkeypatch.setattr(accelerator, "_import_torch_supa", lambda: imports.append("supa") or True)
+    monkeypatch.setattr(accelerator, "_import_torch_npu", lambda: pytest.fail("No NPU is visible"))
+    accelerator.register_accelerator("fake", FakeAccelerator, lambda: False)
+    monkeypatch.setattr(FakeAccelerator, "supports", lambda *args: pytest.fail("No hardware capability is needed"))
+
+    assert accelerator.initialize_accelerator(require_device=False) is None
+    assert accelerator.initialize_accelerator(require_device=False) is None
+    assert imports == ([backend] if backend in {"musa", "supa"} else [])
+    assert accelerator._ACCELERATOR is None
+    with pytest.raises(RuntimeError, match="unavailable|no visible"):
+        accelerator.get_accelerator()
+
+
+@pytest.mark.unit
+def test_import_preparation_rejects_an_unknown_explicit_backend(monkeypatch):
+    monkeypatch.setenv("VIME_ACCELERATOR", "unknown")
+    with pytest.raises(ValueError, match="Unknown accelerator"):
+        accelerator.initialize_accelerator(require_device=False)
+
+
+@pytest.mark.unit
+def test_import_preparation_does_not_hide_a_broken_runtime_dependency(monkeypatch):
+    monkeypatch.setenv("VIME_ACCELERATOR", "supa")
+
+    def broken_runtime():
+        raise RuntimeError("SUPA dependency failed")
+
+    monkeypatch.setattr(accelerator, "_import_torch_supa", broken_runtime)
+    with pytest.raises(RuntimeError, match="SUPA dependency failed"):
+        accelerator.initialize_accelerator(require_device=False)
 
 
 @pytest.mark.unit
@@ -161,6 +210,7 @@ def test_registered_backend_can_be_selected(monkeypatch):
 
     monkeypatch.setattr(accelerator, "is_musa_available", lambda: False)
     monkeypatch.setattr(accelerator, "is_supa_available", lambda: False)
+    monkeypatch.setattr(accelerator, "is_npu_available", lambda: False)
     monkeypatch.setattr(accelerator, "_cuda_available", lambda: False)
     accelerator.register_accelerator("registered", RegisteredAccelerator, lambda: True, priority=300)
 

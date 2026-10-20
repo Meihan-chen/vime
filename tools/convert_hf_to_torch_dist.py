@@ -4,6 +4,12 @@ import shutil
 
 import torch
 import torch.distributed as dist
+
+# Imported before anything from megatron: the vendor bootstrap this triggers
+# has to install its patches first. A no-op where there is nothing to patch.
+import vime.backends.megatron_utils  # noqa: F401
+
+# isort: split
 from megatron.core.enums import ModelType
 from megatron.training.arguments import parse_args, validate_args
 from megatron.training.checkpointing import get_checkpoint_name, get_checkpoint_tracker_filename, save_checkpoint

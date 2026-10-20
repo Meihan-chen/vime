@@ -18,6 +18,7 @@ import _unit_stubs
 import pytest
 import torch
 
+from vime.backends.vllm_weight_transfer import WeightTransfer
 from vime.utils.types import ParamInfo
 
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_tensor"
@@ -187,18 +188,36 @@ def _install_ipc_trainer_stubs(monkeypatch, created):
     ipc_module.IPCTrainerInitInfo = IPCTrainerInitInfo
     monkeypatch.setitem(sys.modules, factory_module.__name__, factory_module)
     monkeypatch.setitem(sys.modules, ipc_module.__name__, ipc_module)
+    monkeypatch.setattr(_module(), "current_weight_transfer", WeightTransfer)
+
+
+def _module():
+    return sys.modules[MODULE_PATH]
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("backend,is_sender", [("nccl", True), ("nccl", False), ("ipc", True)])
-def test_connect_uses_native_ipc_and_nccl_trainers(update_module, monkeypatch, backend, is_sender):
+@pytest.mark.parametrize(
+    "backend,is_sender",
+    [("nccl", True), ("nccl", False), ("hccl", True), ("hccl", False), ("ipc", True), ("npu_ipc", True)],
+)
+def test_connect_cleans_old_engines_and_creates_native_trainers(update_module, monkeypatch, backend, is_sender):
     updater = _updater(update_module)
-    old_trainer = RecordingTrainer(object(), backend=backend, is_sender=is_sender)
-    updater._native_trainers = [old_trainer]
+    old_engine = RecordingEngine()
+    old_client = update_module.VimeRayWeightSyncClient([old_engine], lambda: updater.weight_version)
+    old_trainer = RecordingTrainer(old_client, backend=backend, is_sender=is_sender)
     engines = [RecordingEngine(), RecordingEngine()]
     ipc_created = []
     nccl_created = []
+    updater._native_trainers = [old_trainer]
     _install_ipc_trainer_stubs(monkeypatch, ipc_created)
+    if backend in ("hccl", "npu_ipc"):
+        from vime_plugins.ascend.weight_transfer import NpuWeightTransfer
+
+        class HcclWithFakeIpc(NpuWeightTransfer):
+            def init_info(self, transport, **kwargs):
+                return WeightTransfer().init_info(transport, **kwargs)
+
+        monkeypatch.setattr(update_module, "current_weight_transfer", HcclWithFakeIpc)
     monkeypatch.setattr(update_module, "configure_expert_routing", lambda **kwargs: (None, []))
 
     def create_nccl(client, source, gpu_counts):
@@ -215,7 +234,8 @@ def test_connect_uses_native_ipc_and_nccl_trainers(update_module, monkeypatch, b
 
     assert old_trainer.shutdown_calls == 1
     assert engines[0].destroy_weights_update_group.calls == []
-    assert len(engines[1].destroy_weights_update_group.calls) == int(backend == "nccl" and is_sender)
+    assert engines[1].destroy_weights_update_group.calls == []
+    assert len(old_engine.destroy_weights_update_group.calls) == int(backend in ("nccl", "hccl") and is_sender)
     assert len(updater._native_trainers) == 2
     assert ipc_created[0][0].packed is True
     assert ipc_created[0][2] is updater._source
@@ -359,12 +379,7 @@ def test_build_packed_ipc_update_info_uses_vllm_wire_format(update_module, monke
     )
     monkeypatch.setitem(sys.modules, packed_module.__name__, packed_module)
     monkeypatch.setattr(torch.multiprocessing.reductions, "reduce_tensor", lambda tensor: (None, ("ipc",)))
-    monkeypatch.setattr(update_module.torch.cuda, "current_device", lambda: 0)
-    monkeypatch.setattr(
-        update_module.torch.cuda,
-        "get_device_properties",
-        lambda device: types.SimpleNamespace(uuid="GPU-0"),
-    )
+    monkeypatch.setattr(WeightTransfer, "ipc_handle_key", lambda self: "GPU-0")
 
     update_info, weight_ref = update_module._build_packed_ipc_update_info(
         [("a", torch.zeros(2, dtype=torch.float16)), ("b", torch.zeros(2))]

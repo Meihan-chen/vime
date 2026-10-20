@@ -22,12 +22,17 @@ from .base import Accelerator
 from .cuda import CUDAAccelerator
 from .musa import MUSAAccelerator
 from .musa import is_musa_available as _is_musa_available
+from .npu import NPUAccelerator
+from .npu import has_visible_device as _has_npu_device
+from .npu import is_npu_available as _is_npu_available
 from .supa import SUPAAccelerator
 from .supa import is_supa_available as _is_supa_available
 
 logger = logging.getLogger(__name__)
 
 _MUSA_PATCH_IMPORTED = False
+_NPU_RUNTIME_IMPORTED = False
+_NPU_BOOTSTRAP_CHECKED = False
 _MUSA_BOOTSTRAP_CHECKED = False
 _SUPA_RUNTIME_IMPORTED = False
 _SUPA_BOOTSTRAP_CHECKED = False
@@ -179,6 +184,45 @@ def _bootstrap_torch_supa_if_needed() -> bool:
     return _try_import_torch_supa()
 
 
+def _import_torch_npu() -> bool:
+    try:
+        importlib.import_module("torch_npu")
+    except ModuleNotFoundError as exc:
+        if exc.name == "torch_npu":
+            return False
+        raise RuntimeError(f"torch_npu failed because dependency {exc.name!r} is missing") from exc
+    except Exception as exc:
+        raise RuntimeError(f"torch_npu initialization failed: {exc}") from exc
+    return True
+
+
+def is_npu_available() -> bool:
+    return _is_npu_available()
+
+
+def _try_import_torch_npu() -> bool:
+    global _NPU_RUNTIME_IMPORTED
+    if _NPU_RUNTIME_IMPORTED:
+        return True
+    if not _has_npu_device():
+        raise RuntimeError(
+            "Requested NPU runtime has no visible Ascend device; configure the driver through describe_accelerator()"
+        )
+    _NPU_RUNTIME_IMPORTED = _import_torch_npu()
+    if not _NPU_RUNTIME_IMPORTED:
+        raise RuntimeError("Ascend devices are present but torch_npu is not installed")
+    return True
+
+
+def _bootstrap_torch_npu_if_needed() -> bool:
+    global _NPU_BOOTSTRAP_CHECKED
+    if _NPU_BOOTSTRAP_CHECKED:
+        return _NPU_RUNTIME_IMPORTED
+    imported = _try_import_torch_npu()
+    _NPU_BOOTSTRAP_CHECKED = True
+    return imported
+
+
 def _cuda_available() -> bool:
     try:
         return bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
@@ -197,10 +241,12 @@ def _register_builtin_backends() -> None:
         register_accelerator(
             "supa", SUPAAccelerator, is_supa_available, priority=150, communication_backends=("bccl",)
         )
+    if "npu" not in _REGISTRY:
+        register_accelerator("npu", NPUAccelerator, is_npu_available, priority=0, communication_backends=("hccl",))
 
 
 def _requested_name() -> str | None:
-    value = os.environ.get("VIME_ACCELERATOR")
+    value = os.environ.get("VIME_ACCELERATOR", "").strip()
     if value and value.lower() != "auto":
         return value.strip().lower()
     if _musa_requested():
@@ -210,7 +256,7 @@ def _requested_name() -> str | None:
     return None
 
 
-def _make_selected(name: str, explicit: bool) -> Accelerator:
+def _make_selected(name: str, explicit: bool, *, require_device: bool = True) -> Accelerator | None:
     _register_builtin_backends()
     entry = _REGISTRY.get(name)
     if entry is None:
@@ -224,6 +270,11 @@ def _make_selected(name: str, explicit: bool) -> Accelerator:
         # torch_supa attaches torch.supa and registers the "supa" device type,
         # so bootstrap after SUPA has been chosen but before validating it.
         _bootstrap_torch_supa_if_needed()
+    if name == "npu" and (require_device or _has_npu_device()):
+        # Importing torch_npu attaches torch.npu and registers the NPU device.
+        _bootstrap_torch_npu_if_needed()
+    if not require_device and not entry.is_available():
+        return None
     if explicit and not entry.is_available():
         if name == "musa":
             detail = (
@@ -231,6 +282,8 @@ def _make_selected(name: str, explicit: bool) -> Accelerator:
             )
         elif name == "supa":
             detail = "torch.supa is unavailable; install a SUPA-enabled PyTorch runtime that provides torch_supa"
+        elif name == "npu":
+            detail = "torch.npu is unavailable; install torch_npu and ensure an Ascend device is visible"
         elif name == "cuda":
             detail = "torch.cuda.is_available() is false or no CUDA device is visible"
         else:
@@ -240,6 +293,14 @@ def _make_selected(name: str, explicit: bool) -> Accelerator:
     if not backend.is_available():
         raise RuntimeError(f"Accelerator backend {name!r} was selected but is unavailable at runtime")
     return backend
+
+
+def _candidate_available(name: str, entry: _BackendRegistration) -> bool:
+    if name == "npu" and entry.factory is NPUAccelerator:
+        if not _has_npu_device():
+            return False
+        _bootstrap_torch_npu_if_needed()
+    return entry.is_available()
 
 
 def get_accelerator() -> Accelerator:
@@ -259,7 +320,7 @@ def get_accelerator() -> Accelerator:
         # Highest priority wins; names break priority ties deterministically.
         candidates = sorted(_REGISTRY.items(), key=lambda item: (-item[1].priority, item[0]))
         for name, registration in candidates:
-            if registration.is_available():
+            if _candidate_available(name, registration):
                 _ACCELERATOR = _make_selected(name, explicit=False)
                 logger.info("Selected accelerator %s (auto)", _ACCELERATOR.name)
                 return _ACCELERATOR
@@ -271,18 +332,26 @@ def get_accelerator() -> Accelerator:
         )
 
 
-def initialize_accelerator() -> Accelerator | None:
+def initialize_accelerator(*, require_device: bool = True) -> Accelerator | None:
     """Finalize runtime selection when a backend is requested or available.
 
-    Explicit requests retain ``get_accelerator``'s fail-fast behavior. An
-    environment without accelerator hardware remains importable for CPU-only
-    tooling and documentation.
+    Package imports may pass ``require_device=False`` to prepare the selected
+    runtime without demanding local hardware. This also applies to registered
+    backends. Actual device operations retain ``get_accelerator``'s strict checks.
     """
+    global _ACCELERATOR
     if _ACCELERATOR is not None:
         return _ACCELERATOR
     with _SELECTION_LOCK:
         _register_builtin_backends()
-        if _requested_name() is not None or any(entry.is_available() for entry in _REGISTRY.values()):
+        requested = _requested_name()
+        if not require_device and requested is not None:
+            _ACCELERATOR = _make_selected(requested, explicit=True, require_device=False)
+            return _ACCELERATOR
+        if requested is not None or any(
+            _candidate_available(name, entry)
+            for name, entry in sorted(_REGISTRY.items(), key=lambda item: (-item[1].priority, item[0]))
+        ):
             return get_accelerator()
         return None
 
@@ -306,6 +375,31 @@ def reset_accelerator() -> None:
 
 def _backend() -> Accelerator:
     return get_accelerator()
+
+
+def describe_accelerator() -> Accelerator:
+    """The backend whose description applies, without requiring a usable device.
+
+    A driver that only builds scheduling requests needs the resource name, not
+    a working device, and may legitimately have none of its own. Resolution
+    order is the already selected backend, the requested one read for its
+    description alone, whatever this host can actually offer, and finally the
+    default the GPU path assumes.
+    """
+    if _ACCELERATOR is not None:
+        return _ACCELERATOR
+    _register_builtin_backends()
+    requested = _requested_name()
+    if requested is not None:
+        entry = _REGISTRY.get(requested)
+        if entry is None:
+            registered = ", ".join(sorted(_REGISTRY))
+            raise ValueError(f"Unknown accelerator {requested!r}; registered backends: {registered}")
+        return entry.factory()
+    selected = initialize_accelerator()
+    if selected is not None:
+        return selected
+    return CUDAAccelerator()
 
 
 def device_type() -> str:
@@ -453,6 +547,14 @@ def process_group_backend(default: str = "nccl") -> str:
 
 def weight_update_backend(default: str = "nccl") -> str:
     return _backend().weight_update_backend(default)
+
+
+def ray_resource_name() -> str:
+    return describe_accelerator().ray_resource_name
+
+
+def ray_uses_native_gpu_resource() -> bool:
+    return describe_accelerator().ray_uses_native_gpu_resource
 
 
 def visible_devices_env_key() -> str:

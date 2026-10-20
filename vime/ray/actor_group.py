@@ -8,8 +8,11 @@ import ray
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from vime.ray import resources
 from vime.ray.training_recovery import configure_recovery_checkpoint, training_recovery_enabled
 from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, add_default_ray_env_vars
+from vime.utils.device_env import current as current_device_env
+from vime.utils.device_env import for_child
 from vime.utils.weight_sync import should_flush_cache
 
 
@@ -76,27 +79,8 @@ class RayTrainGroup:
         }
 
         if self.args.offload_train:
-            import torch_memory_saver
-
-            for path in [
-                "torch_memory_saver_hook_mode_preload_cu13.abi3.so",
-                "torch_memory_saver_hook_mode_preload_cu12.abi3.so",
-                "torch_memory_saver_hook_mode_preload.abi3.so",
-            ]:
-                dynlib_path = os.path.join(
-                    os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
-                    path,
-                )
-                if os.path.exists(dynlib_path):
-                    break
-            else:
-                raise FileNotFoundError(
-                    "Cannot find torch_memory_saver dynamic library. Please make sure torch_memory_saver is properly installed."
-                )
-
-            env_vars["LD_PRELOAD"] = dynlib_path
-            env_vars["TMS_INIT_ENABLE"] = "1"
-            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
+            env_vars = current_device_env().train_offload_env(self.args, env_vars)
+        env_vars = for_child(env_vars)
 
         # We cannot do routing replay for critic.
         if self.args.use_routing_replay and self.role == "actor":
@@ -123,11 +107,11 @@ class RayTrainGroup:
         for rank in range(world_size):
             actor = TrainRayActor.options(
                 num_cpus=num_gpus_per_actor,
-                num_gpus=num_gpus_per_actor,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=pg,
                     placement_group_bundle_index=reordered_bundle_indices[rank],
                 ),
+                **resources.actor_options(num_gpus_per_actor),
             ).remote(world_size, rank, master_addr, master_port)
             if rank == 0:
                 master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())

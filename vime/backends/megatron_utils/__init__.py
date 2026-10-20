@@ -2,9 +2,13 @@ import logging
 
 import torch
 
+from vime.backends.megatron_integration import current as current_megatron_integration
 from vime.utils import accelerator
 
-accelerator.initialize_accelerator()
+# Install training patches before any Megatron import. A CPU driver can load
+# backend definitions; device operations still require an available runtime.
+accelerator.initialize_accelerator(require_device=False)
+current_megatron_integration().before_import()
 
 try:
     import deep_ep

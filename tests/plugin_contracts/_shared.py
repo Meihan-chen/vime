@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import types
@@ -19,12 +20,28 @@ def install_paths() -> None:
     sys.path.insert(0, str(current.parents[2]))
 
 
+def _should_stub(name: str) -> bool:
+    """Whether to shadow a module, which a real installation must never be.
+
+    These stubs are installed at import time and never removed, so stubbing
+    something importable breaks every later test that wants the real thing.
+    "not in sys.modules" is not enough: the real package may simply not have
+    been imported yet.
+    """
+    if name in sys.modules:
+        return False
+    try:
+        return importlib.util.find_spec(name) is None
+    except (ImportError, ValueError):
+        return True
+
+
 def install_stubs(*, with_vllm_router: bool = False, with_transformers: bool = False) -> None:
     if with_vllm_router and "vllm_router" not in sys.modules:
         mod = types.ModuleType("vllm_router")
         sys.modules["vllm_router"] = mod
 
-    if with_transformers and "transformers" not in sys.modules:
+    if with_transformers and _should_stub("transformers"):
         mod = types.ModuleType("transformers")
         mod.AutoTokenizer = type(
             "AutoTokenizer", (), {"from_pretrained": staticmethod(lambda *args, **kwargs: object())}

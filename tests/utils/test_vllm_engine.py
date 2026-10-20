@@ -17,6 +17,9 @@ import pytest
 import requests
 import torch
 
+from vime.backends.vllm_weight_transfer import WeightTransfer
+from vime_plugins.ascend.weight_transfer import NpuWeightTransfer
+
 _unit_stubs.install_vllm_cli_stubs()
 
 from vime.backends.vllm_utils import vllm_engine as mod
@@ -91,6 +94,10 @@ class _MockResponse:
         if self._json_data is None:
             raise ValueError("no json")
         return self._json_data
+
+
+def _backend_for(platform_name):
+    return WeightTransfer if platform_name == "cuda" else NpuWeightTransfer
 
 
 @pytest.mark.unit
@@ -349,7 +356,10 @@ def test_compute_server_args_model_path_override_wins(vllm_args, monkeypatch):
 
 
 @pytest.mark.unit
-def test_compute_server_args_external_check_fields_skip_orchestration_fields(vllm_args):
+def test_compute_server_args_external_check_fields_skip_orchestration_fields(vllm_args, monkeypatch):
+    # The backend assertion below is CUDA's, so do not read the ambient platform.
+    monkeypatch.setattr(mod, "current_weight_transfer", _backend_for("cuda"))
+
     sa, check_fields = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
     assert "model" not in check_fields
     assert "host" not in check_fields
@@ -436,6 +446,34 @@ def test_compute_server_args_adds_sleep_mode_for_offload_rollout(vllm_args):
     sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
     assert sa.get("enable_sleep_mode") is True
     assert vllm_args.vllm_enable_sleep_mode is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "platform_name,colocate,backend",
+    [("cuda", False, "nccl"), ("cuda", True, "ipc"), ("npu", False, "hccl"), ("npu", True, "npu_ipc")],
+)
+def test_compute_server_args_uses_native_platform_backend(vllm_args, monkeypatch, platform_name, colocate, backend):
+    monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
+    vllm_args.vllm_worker_extension_cls = ""
+    vllm_args.colocate = colocate
+    monkeypatch.setattr(mod, "current_weight_transfer", _backend_for(platform_name))
+
+    sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
+
+    assert not sa.get("worker_extension_cls")
+    assert sa["weight_transfer_config"] == {"backend": backend}
+
+
+@pytest.mark.unit
+def test_compute_server_args_keeps_user_worker_extension(vllm_args, monkeypatch):
+    monkeypatch.setattr(mod, "_VLLM_SERVER_FIELDS", frozenset({"worker_extension_cls"}))
+    vllm_args.vllm_worker_extension_cls = "example.UserWorkerExtension"
+    monkeypatch.setattr(mod, "current_weight_transfer", _backend_for("npu"))
+
+    sa, _ = mod._compute_server_args(vllm_args, rank=0, dist_init_addr=None, host="127.0.0.1", port=8000)
+
+    assert sa["worker_extension_cls"] == "example.UserWorkerExtension"
 
 
 @pytest.mark.unit
@@ -543,6 +581,7 @@ def test_update_weights_posts_ipc_payload(vllm_engine, monkeypatch):
 
     assert posted[0][0] == "update_weights"
     sent = posted[0][1]["update_info"]
+    # ipc_handles are pickled for native vLLM/vLLM-Ascend parse_update_info.
     # ipc_handles got cloudpickle'd into ipc_handles_pickled
     assert "ipc_handles" not in sent
     assert isinstance(sent["ipc_handles_pickled"], str)

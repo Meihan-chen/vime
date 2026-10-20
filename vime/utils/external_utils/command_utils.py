@@ -6,11 +6,15 @@ import datetime
 import json
 import os
 import random
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from vime.utils.device_env import current as current_device_env
+from vime.utils.device_env import for_child
+from vime.utils.external_utils.launch import launch_inputs, shell_exports
 from vime.utils.external_utils.typer_utils import dataclass_cli
 from vime.utils.misc import exec_command
 
@@ -104,6 +108,15 @@ def execute_train(
         extra_env_vars = {}
     if config is None:
         config = ExecuteTrainConfig()
+
+    launch = launch_inputs(num_gpus_per_node)
+    # User overrides for platform-required startup variables must reach the
+    # raylet too. Other job-only overrides retain main's original scope.
+    start_env = launch.start_env
+    if start_env:
+        start_overrides = for_child({**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)})
+        start_env = {key: start_overrides.get(key, value) for key, value in start_env.items()}
+
     external_ray = get_bool_env_var("VIME_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
@@ -122,20 +135,19 @@ def execute_train(
         if not ray_running:
             exec_command(
                 # will prevent ray from buffering stdout/stderr
-                f"export PYTHONUNBUFFERED=1 && "
-                f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
+                f"{shell_exports(start_env)}export PYTHONUNBUFFERED=1 && "
+                f"ray start --head --node-ip-address {master_addr} {launch.ray_args} --disable-usage-stats"
             )
 
     if (f := before_ray_job_submit) is not None:
         f()
 
+    # Like main, read job defaults and caller/config overrides after the callback.
+    extra_env_vars = for_child({**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)})
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                "PYTHONPATH": "/root/Megatron-LM/",
-                "RAY_USE_UVLOOP": "0",
-                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
+                **current_device_env().launch_job_env(),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
@@ -149,8 +161,8 @@ def execute_train(
                     if config.cuda_core_dump
                     else {}
                 ),
+                **launch.start_env,
                 **extra_env_vars,
-                **_parse_extra_env_vars(config.extra_env_vars),
             }
         }
     )
@@ -175,11 +187,9 @@ def execute_train(
                 "RAY_USE_UVLOOP": "0",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "MASTER_ADDR": master_addr,
+                **launch.start_env,
                 **extra_env_vars,
-                **_parse_extra_env_vars(config.extra_env_vars),
             }
-            import shlex
-
             amd_exports = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in amd_env.items())
             exec_command(
                 f"export {amd_exports} && "
@@ -191,7 +201,7 @@ def execute_train(
                 f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
                 f"{cmd_megatron_model_source}"
                 f'ray job submit --address="http://127.0.0.1:8265" '
-                f"--runtime-env-json='{runtime_env_json}' "
+                f"--runtime-env-json={shlex.quote(runtime_env_json)} "
                 f"-- python3 train.py "
                 f"{model_args} "
                 f"{train_args}"

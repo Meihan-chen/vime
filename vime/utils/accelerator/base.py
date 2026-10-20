@@ -146,6 +146,12 @@ class Accelerator(abc.ABC):
     def weight_update_backend(self, default: str = "nccl") -> str:
         return self.communication_backend(default)
 
+    ray_resource_name = "GPU"
+    """The resource name Ray advertises this accelerator under."""
+
+    ray_uses_native_gpu_resource = True
+    """Whether that name is Ray's own GPU resource rather than a custom one."""
+
     @property
     def visible_devices_env(self) -> str:
         return "CUDA_VISIBLE_DEVICES"
