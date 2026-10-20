@@ -24,10 +24,9 @@ NUM_GPUS = 4
 TEST_ROOT = os.environ.get("HF_HOME") or "/root"
 MODEL_DIR = f"{TEST_ROOT}/models/{MODEL_NAME}"
 DATASET_DIR = f"{TEST_ROOT}/datasets/gsm8k"
-TORCH_DIST_CKPT = f"/dev/shm/{MODEL_NAME}_torch_dist"
 
 
-def prepare():
+def prepare(checkpoint_root):
     U.exec_command(f"mkdir -p {shlex.quote(MODEL_DIR)} {shlex.quote(DATASET_DIR)}")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir {shlex.quote(MODEL_DIR)}")
     U.exec_command("hf download --repo-type dataset zhuzilin/gsm8k " f"--local-dir {shlex.quote(DATASET_DIR)}")
@@ -35,9 +34,10 @@ def prepare():
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
         num_gpus_per_node=NUM_GPUS,
-        dir_dst="/dev/shm",
+        dir_dst=checkpoint_root,
         hf_checkpoint=MODEL_DIR,
     )
+    return f"{checkpoint_root}/{MODEL_NAME}_torch_dist"
 
 
 def verify_checkpoints(case_dir: Path, encoding: str):
@@ -95,11 +95,12 @@ def verify_checkpoints(case_dir: Path, encoding: str):
     print(f"Disk delta validation passed: {summary}", flush=True)
 
 
-def execute():
+def execute(torch_dist_checkpoint):
     for encoding in ("xor", "overwrite"):
         with tempfile.TemporaryDirectory(prefix=f"vime_delta_disk_{encoding}_") as disk_dir:
-            # prepare() explicitly creates this checkpoint on every platform.
-            ckpt_args = f"--hf-checkpoint {shlex.quote(MODEL_DIR)} " f"--ref-load {shlex.quote(TORCH_DIST_CKPT)} "
+            ckpt_args = (
+                f"--hf-checkpoint {shlex.quote(MODEL_DIR)} " f"--ref-load {shlex.quote(torch_dist_checkpoint)} "
+            )
 
             rollout_args = (
                 f"--prompt-data {shlex.quote(f'{DATASET_DIR}/train.parquet')} "
@@ -199,8 +200,15 @@ def execute():
             verify_checkpoints(Path(disk_dir), encoding)
 
 
+def main():
+    checkpoint_tmp_root = Path(TEST_ROOT) / "tmp"
+    checkpoint_tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="vime_delta_torch_dist_", dir=checkpoint_tmp_root) as checkpoint_root:
+        torch_dist_checkpoint = prepare(checkpoint_root)
+        for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+            os.environ.pop(proxy_var, None)
+        execute(torch_dist_checkpoint)
+
+
 if __name__ == "__main__":
-    prepare()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-    execute()
+    main()

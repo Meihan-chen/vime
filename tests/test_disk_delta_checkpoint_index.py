@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import shlex
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -26,6 +28,48 @@ def _load_trainer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("fail_training", [False, True])
+def test_smoke_conversion_checkpoint_is_temporary_and_used_for_ref_load(monkeypatch, tmp_path, fail_training):
+    monkeypatch.setitem(sys.modules, "vime.backends.megatron_utils.hf_to_megatron.common", _load_trainer())
+    spec = importlib.util.spec_from_file_location("delta_disk_smoke", ROOT / "tests/test_delta_disk_weight_update.py")
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    monkeypatch.setattr(smoke, "TEST_ROOT", str(tmp_path))
+    monkeypatch.setattr(smoke.U, "exec_command", lambda command: None)
+    monkeypatch.setattr(smoke.U, "get_default_wandb_args", lambda path: "")
+    monkeypatch.setattr(smoke, "verify_checkpoints", lambda *args: None)
+    for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    checkpoints = []
+    rollouts = []
+
+    def convert(**kwargs):
+        root = Path(kwargs["dir_dst"])
+        assert root.parent == tmp_path / "tmp"
+        checkpoint = root / f"{kwargs['model_name']}_torch_dist"
+        checkpoint.mkdir()
+        checkpoints.append(checkpoint)
+
+    def train(**kwargs):
+        tokens = shlex.split(kwargs["train_args"])
+        assert tokens[tokens.index("--ref-load") + 1] == str(checkpoints[0])
+        assert checkpoints[0].is_dir()
+        rollouts.append(tokens[tokens.index("--update-weight-delta-encoding") + 1])
+        if fail_training:
+            raise RuntimeError("training failed")
+
+    monkeypatch.setattr(smoke.U, "convert_checkpoint", convert)
+    monkeypatch.setattr(smoke.U, "execute_train", train)
+    if fail_training:
+        with pytest.raises(RuntimeError, match="training failed"):
+            smoke.main()
+    else:
+        smoke.main()
+    assert rollouts == (["xor"] if fail_training else ["xor", "overwrite"])
+    assert len(checkpoints) == 1
+    assert not checkpoints[0].parent.exists()
 
 
 def _load_receiver(patch):

@@ -169,8 +169,8 @@ def test_npu_train_actor_env_carries_the_region_settings(monkeypatch, tmp_path):
 
     assert env["BASE"] == "1"
     assert env["TMS_HOOK_MODE"] == "torch"
-    assert env["TMS_REGION_TAG"] == "training"
-    assert env["TMS_ENABLE_CPU_BACKUP"] == "1"
+    assert "TMS_REGION_TAG" not in env
+    assert "TMS_ENABLE_CPU_BACKUP" not in env
     assert env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:False"
     assert str(toolkit / "python" / "site-packages") in env["PYTHONPATH"]
 
@@ -181,6 +181,12 @@ def test_train_actor_env_is_untouched_without_offload(device_env):
     args = Namespace(offload_train=False, train_backend="megatron", colocate=True)
 
     assert device_env().train_actor_env(args, {"BASE": "1"}) == {"BASE": "1"}
+
+
+@pytest.mark.unit
+def test_npu_does_not_enable_megatron_offload_for_other_backends():
+    args = Namespace(offload_train=True, train_backend="fsdp", colocate=True)
+    assert _npu_device_env().train_actor_env(args, {"BASE": "1"}) == {"BASE": "1"}
 
 
 @pytest.mark.parametrize("chained", [False, True])

@@ -567,12 +567,9 @@ def test_qwen3_vl_tied_output_uses_language_embedding(top_tied, text_tied, has_h
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("reported_partition_dim", [0, 1])
 @pytest.mark.parametrize("expert", [False, True])
 @pytest.mark.parametrize("parallel_size", [1, 2, 4])
-def test_fc1_shards_on_dim_zero_whichever_dim_is_reported(monkeypatch, reported_partition_dim, expert, parallel_size):
-    # Transformer Engine reports 0 for these; some grouped-MoE implementations
-    # report 1 while storing them [out, in] anyway. Both must shard the same.
+def test_fc1_loading_uses_parameter_partition_metadata(monkeypatch, expert, parallel_size):
     mpu = pytest.importorskip("megatron.core").mpu
     monkeypatch.setattr(mpu, "get_tensor_model_parallel_world_size", lambda: 8 if expert else parallel_size)
     monkeypatch.setattr(mpu, "get_tensor_model_parallel_rank", lambda: 0 if expert else parallel_size - 1)
@@ -581,7 +578,7 @@ def test_fc1_shards_on_dim_zero_whichever_dim_is_reported(monkeypatch, reported_
     name = "decoder.layers.0.mlp." + ("experts.linear_fc1.weight0" if expert else "linear_fc1.weight")
     weight = torch.arange(16 * 8).reshape(16, 8)
     parameter = types.SimpleNamespace(
-        tensor_model_parallel=True, partition_dim=reported_partition_dim, partition_stride=1
+        tensor_model_parallel=True, partition_dim=0, partition_stride=1
     )
     shard = shard_mcore_tensor(name, weight, parameter)
     gate, up = weight.chunk(2)

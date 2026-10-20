@@ -97,11 +97,9 @@ def _with_cann_and_allocator(env: dict[str, str], colocate: bool) -> dict[str, s
 class NpuDeviceEnv(DeviceEnv):
     def train_actor_env(self, args: Any, env_vars: Mapping[str, str] | None = None) -> dict[str, str]:
         env = dict(env_vars or {})
-        if not offload_requested(args):
+        if not offload_requested(args) or getattr(args, "train_backend", None) != "megatron":
             return env
         env["TMS_HOOK_MODE"] = "torch"
-        env["TMS_REGION_TAG"] = "training"
-        env["TMS_ENABLE_CPU_BACKUP"] = "1"
         return _with_cann_and_allocator(env, getattr(args, "colocate", False))
 
     def engine_actor_env(self, args: Any, env_vars: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -120,7 +118,6 @@ class NpuDeviceEnv(DeviceEnv):
             "HCCL_CONNECT_TIMEOUT": "7200",
             "PYTORCH_NPU_ALLOC_CONF": _ALLOC_CONF,
             "VLLM_DISABLE_COMPILE_CACHE": "1",
-            "VLLM_ASCEND_ENABLE_NZ": "0",
             "HYDRA_FULL_ERROR": "1",
             "TRANSFORMERS_VERBOSITY": "error",
         }

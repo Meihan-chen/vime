@@ -12,17 +12,6 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 from vime.utils.types import ParamInfo
 
 
-def _normalized_fc1_partition_dim(partition_dim: int) -> int:
-    """Column-parallel fc1 weights are stored [out, in], so they shard on dim 0.
-
-    Some grouped-MoE implementations report dim 1 for them while laying them
-    out that way regardless, which contradicts the per-partition size they
-    initialize with. Transformer Engine reports 0, so this only corrects the
-    ones that disagree.
-    """
-    return 0 if partition_dim == 1 else partition_dim
-
-
 def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:
     """
     All-gather TP-sharded param to full tensor. expert_bias→param,
@@ -60,7 +49,6 @@ def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:
     if "linear_fc1.weight" in name or "linear_fc1.bias" in name:
         param_partitions = [p.chunk(2, dim=0) for p in param_partitions]
         param_partitions = [p[0] for p in param_partitions] + [p[1] for p in param_partitions]
-        partition_dim = _normalized_fc1_partition_dim(partition_dim)
     # this is bug in megatron's grouped moe.
     if "linear_fc2.weight" in name:
         if partition_dim == 0:
@@ -128,7 +116,6 @@ def all_gather_params_async(
             if "linear_fc1.weight" in info.name or "linear_fc1.bias" in info.name:
                 param_partitions = [p.chunk(2, dim=0) for p in param_partitions]
                 param_partitions = [p[0] for p in param_partitions] + [p[1] for p in param_partitions]
-                partition_dim = _normalized_fc1_partition_dim(partition_dim)
             # this is bug in megatron's grouped moe.
             if "linear_fc2.weight" in info.name:
                 if partition_dim == 0:
