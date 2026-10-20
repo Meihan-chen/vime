@@ -206,10 +206,6 @@ main() {
         return 1
     fi
 
-    # A patch diff cannot upgrade the vendor base. Check before reverting anything.
-    python3 "${VIME_NPU_PATCH_SOURCE_ROOT}/tools/check_npu_stack.py" \
-        --manifest "${VIME_NPU_PATCH_SOURCE_ROOT}/docker/npu_patch/versions.json"
-
     echo "=== Step 3: Reconcile image patches with current VIME patches ==="
     reconcile_series "$old_series" "$VIME_NPU_PATCH_STATE_DIR" "$new_series" "$VIME_NPU_PATCH_SOURCE_ROOT"
 

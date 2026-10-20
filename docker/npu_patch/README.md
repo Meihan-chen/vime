@@ -2,7 +2,7 @@
 
 This guide describes the pinned source stack and patch order. Hardware acceptance of this integration remains pending. The normal path is the [image build](../../docs/en/get_started/NPU.md); manual installation is for dependency debugging.
 
-`versions.json` is the machine-readable source pin contract. Run `python tools/check_npu_stack.py` after preparing the repositories. Docker and runtime CI perform this check before patch application/reconciliation. Build with a full `VIME_COMMIT` SHA and the repository that contains it; moving branch defaults are not accepted.
+The base image and source pins in [Dockerfile.npu](../Dockerfile.npu) select the dependency versions listed below. Build with a full `VIME_COMMIT` SHA and the repository that contains it; moving branch defaults are not accepted. Rebuild the image when dependency versions change.
 
 ## Component Version Mapping
 

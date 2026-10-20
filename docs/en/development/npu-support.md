@@ -109,16 +109,12 @@ Follow the three component boundaries. For each moved caller, verify the new
 function still calls the component at the right stage. Run the tests through
 that real function. Do not rely only on a conflict-free merge or source grep.
 
-For a new vendor base, update `docker/npu_patch/versions.json`, Docker source
-pins, and the corresponding patch together. Verify clean apply and exact
-reverse against pristine source. The NPU CI update script refuses a different base before
-reverting its old patches. The source identity checks cover the framework and
-vendor source pins, not byte-for-byte reproducibility of all downloaded tools.
+For a new vendor base, update the Docker base image or source pins and the
+corresponding patches together, then rebuild the image. Verify clean apply and
+exact reverse against pristine source. The NPU CI update script reconciles
+patches; it does not upgrade or validate the installed vendor versions.
 
-`tools/check_npu_stack.py` is build/update tooling, not a prerequisite for NPU
-execution and not an integration interface. It only compares Git HEADs with the
-recorded source commits; it does not verify installed packages, patch contents
-or hardware compatibility. The NPU Megatron pin remains `1dcf0dafa884ad52ffb243625717a3471643e087`
+The NPU Megatron pin remains `1dcf0dafa884ad52ffb243625717a3471643e087`
 in N8, N10 and this implementation. The M10 GPU image uses `4b4acac9a1d28ea6829c8d4f566d75698a21249d`;
 the NPU integration does not upgrade to that GPU pin.
 

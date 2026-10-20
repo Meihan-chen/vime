@@ -20,11 +20,10 @@ docker build -f docker/Dockerfile.npu \
 ```
 
 The build requires a full commit SHA. It compares the fetched code's NPU patches
-with the build context, and checks vendor Git versions against
-[`versions.json`](../../../docker/npu_patch/versions.json). An older image cannot
-be upgraded across vendor base versions just by replacing patch files: rebuild
-it when the check requests that. The build itself still needs validation on the
-image builder; these checks do not make every transitive dependency immutable.
+with the build context. Vendor versions are selected by the base image and
+source pins in [Dockerfile.npu](../../../docker/Dockerfile.npu). Rebuild the image
+when these versions change; replacing patch files does not upgrade dependencies.
+The build itself still needs validation on the image builder.
 
 Use the known working driver/device mounts for your Ascend host. The container
 must expose actual compute devices (`/dev/davinci0`, etc.), in addition to the
@@ -36,7 +35,6 @@ source /usr/local/Ascend/ascend-toolkit/set_env.sh
 source /usr/local/Ascend/nnal/atb/set_env.sh
 export VIME_ACCELERATOR=npu
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tools/check_npu_stack.py
 ```
 
 Use `VIME_ACCELERATOR`, including in conversion processes. The old NPU branch's

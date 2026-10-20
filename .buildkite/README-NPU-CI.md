@@ -112,6 +112,6 @@ bytes under `/tmp/npu_patch` but not the OLD series required by this reconciler.
 
 The NPU image build requires `VIME_COMMIT` as a full Git SHA and accepts
 `VIME_REPOSITORY` (CI passes `BUILDKITE_REPO`). Its patch bytes must match the
-fetched checkout. `tools/check_npu_stack.py` verifies `versions.json` before
-build-time application and before runtime reconciliation. A different vendor
+fetched checkout. Vendor versions are selected by the base image and Dockerfile
+source pins. Runtime reconciliation updates patches only; changing the vendor
 base requires a rebuilt image. NPU test jobs explicitly set `VIME_ACCELERATOR=npu`.

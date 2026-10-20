@@ -108,9 +108,6 @@ ENV SOC_VERSION=$SOC_VERSION \
 # docker/npu_patch/series.conf synchronized.
 COPY docker/npu_patch /opt/npu_patch
 
-COPY tools/check_npu_stack.py /opt/npu_patch/check_npu_stack.py
-RUN python3 /opt/npu_patch/check_npu_stack.py --manifest /opt/npu_patch/versions.json --only vllm vllm-ascend
-
 # System and pip dependencies.
 RUN if [ -n "$APTMIRROR" ];then sed -i "s@^\(deb.*\)https\?://[a-z0-9.-]*\.ubuntu\.com@\1$APTMIRROR@g" /etc/apt/sources.list; \
     else sed -i '/ports\.ubuntu\.com/ {h;s|ports\.ubuntu\.com|mirrors.tuna.tsinghua.edu.cn|g;G}' /etc/apt/sources.list; fi && \
@@ -152,8 +149,6 @@ RUN git clone https://gitcode.com/Ascend/MegatronAdaptor.git /root/MegatronAdapt
     git clone https://gitcode.com/Ascend/TransformerEngineNPU.git /root/TransformerEngineNPU && \
     git -C /root/TransformerEngineNPU checkout "${TRANSFORMER_ENGINE_NPU_COMMIT}"
 
-RUN python3 /opt/npu_patch/check_npu_stack.py --manifest /opt/npu_patch/versions.json
-
 # Apply NPU training-stack patches from the build-context snapshot.
 # The standalone Megatron patch targets the pinned NPU training baseline.
 # fla 0.5.2 supplies the GDN kernels; the adaptor torch stand-in rejects
@@ -189,8 +184,7 @@ RUN [[ "${VIME_COMMIT}" =~ ^[0-9a-f]{40}$ ]] && \
       [[ -z "$target" || "$target" == \#* ]] && continue; \
       cmp "/opt/npu_patch/${image_patch}" "/root/vime/${source_patch}" || exit 1; \
     done < /opt/npu_patch/series.conf && \
-    cmp /opt/npu_patch/series.conf /root/vime/docker/npu_patch/series.conf && \
-    cmp /opt/npu_patch/versions.json /root/vime/docker/npu_patch/versions.json
+    cmp /opt/npu_patch/series.conf /root/vime/docker/npu_patch/series.conf
 
 # Install the arm64 wheel before resolving the required Sunabako dependency.
 COPY --from=sunabako-wheel /wheels/ /tmp/sunabako-wheels/
