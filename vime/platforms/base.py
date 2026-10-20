@@ -118,9 +118,6 @@ class TrainingBootstrap:
     def repatch(self, args: Any) -> None:
         return None
 
-    def adjust_tp_partition_dim(self, name: str, partition_dim: int) -> int:
-        return partition_dim
-
     def training_context(self, offload_train: bool):
         return nullcontext()
 
