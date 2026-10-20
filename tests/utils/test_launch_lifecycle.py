@@ -92,6 +92,7 @@ def test_execute_train_preserves_cluster_and_serving(monkeypatch, platform_name,
             assert "--resources '{\"NPU\": 4}'" in starts[0]
             assert "export VIME_PLATFORM=npu" in starts[0]
             assert "export CUSTOM='config value'" in starts[0]
+            assert "VLLM_ASCEND_ENABLE_NZ" not in starts[0]
         else:
             assert "--num-gpus 4" in starts[0]
             assert "--resources" not in starts[0]
@@ -109,6 +110,7 @@ def test_execute_train_preserves_cluster_and_serving(monkeypatch, platform_name,
         if platform_name == "npu":
             assert env["VIME_PLATFORM"] == "npu"
             assert env["RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"] == "1"
+            assert "VLLM_ASCEND_ENABLE_NZ" not in env
 
 
 @pytest.mark.parametrize("platform_name", ["cuda", "npu"])
