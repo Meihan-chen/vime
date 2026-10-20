@@ -11,8 +11,6 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint as _save_checkpoint_megatron
 from megatron.training.global_vars import get_args
 
-from vime.backends.megatron_integration import current as current_megatron_integration
-
 try:
     # Here we patch out the `validate_non_overlapping_shards_metadata` in both functions
     # because it is really slow for large models with many shards.
@@ -24,7 +22,6 @@ try:
     from torch.distributed._shard.sharded_tensor.shard import Shard
     from torch.distributed._shard.sharded_tensor.utils import _parse_and_validate_remote_device
     from torch.distributed._shard.sharding_spec.api import EnumerableShardingSpec
-    from torch.distributed.checkpoint import default_planner
 
     def __post_init__(self):
         pass
@@ -92,10 +89,6 @@ try:
 
 except ImportError:
     pass
-else:
-    # Outside the try: an ImportError raised by a vendor here would be
-    # swallowed, leaving the patches above half applied.
-    current_megatron_integration().after_checkpoint_setup(default_planner)
 
 logger = logging.getLogger(__name__)
 

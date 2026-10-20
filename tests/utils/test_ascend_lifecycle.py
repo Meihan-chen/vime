@@ -52,24 +52,6 @@ def test_argument_patch_failure_requires_a_new_process(monkeypatch):
 
 
 @pytest.mark.unit
-def test_checkpoint_validation_stays_on_and_escape_hatch_is_explicit(monkeypatch, caplog):
-    def original(plan, metadata):
-        return False
-
-    planner = SimpleNamespace(_validate_global_plan=original)
-    monkeypatch.delenv("VIME_NPU_SKIP_CHECKPOINT_VALIDATION", raising=False)
-    AscendMegatronIntegration().after_checkpoint_setup(planner)
-    assert planner._validate_global_plan is original
-    assert planner._validate_global_plan({}, {}) is False
-    monkeypatch.setenv("VIME_NPU_SKIP_CHECKPOINT_VALIDATION", "1")
-    AscendMegatronIntegration().after_checkpoint_setup(planner)
-    assert planner._validate_global_plan({}, {}) is True
-    assert "disables checkpoint shard integrity" in caplog.text
-    with pytest.raises(RuntimeError, match="target .* missing"):
-        AscendMegatronIntegration().after_checkpoint_setup(SimpleNamespace())
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize(
     "training,packed,keep", [(False, False, 1.0), (True, False, 0.8), (False, True, 1.0), (True, True, 0.8)]
 )
@@ -121,10 +103,9 @@ def test_empty_visible_mask_and_manager_only_host_do_not_bootstrap(monkeypatch):
 @pytest.mark.parametrize("backend", ["cuda", "npu"])
 @pytest.mark.parametrize("options", [{"colocate": True}, {"offload_train": True}, {"advantage_estimator": "ppo"}])
 def test_real_argument_validation_keeps_supported_offload_policy(monkeypatch, backend, options):
-    from vime.utils import accelerator, platform_integration
+    from vime.utils import accelerator
 
     monkeypatch.setattr(accelerator, "_ACCELERATOR", None)
-    monkeypatch.setattr(platform_integration, "_selected", None)
     monkeypatch.setenv("VIME_ACCELERATOR", backend)
     monkeypatch.delenv("VIME_PLUGINS", raising=False)
     path = Path(__file__).resolve().parents[1] / "test_megatron_argument_validation.py"
@@ -133,11 +114,23 @@ def test_real_argument_validation_keeps_supported_offload_policy(monkeypatch, ba
     spec.loader.exec_module(helpers)
     module = helpers.load_vime_arguments_module(monkeypatch)
     args, _ = module.vime_validate_args(helpers.make_vime_validate_args(**options))
+    # The generic validator must not load backend components. The owning
+    # backend resolves automatic defaults using its dependency's entry point.
+    backend_args = helpers.load_arguments_module(monkeypatch)
+    buffers = ModuleType("megatron.core.distributed.param_and_grad_buffer")
+    attrs = {"_allocate_buffer": lambda *a: None} if backend == "cuda" else {}
+    buffers._ParamAndGradBuffer = type("Buffer", (), attrs)
+    monkeypatch.setitem(sys.modules, buffers.__name__, buffers)
+    args.moe_token_dispatcher_type = "alltoall"
+    args.pipeline_model_parallel_size = 1
+    args.decoder_first_pipeline_num_layers = None
+    args.decoder_last_pipeline_num_layers = None
+    backend_args.validate_args(args)
     assert args.offload_train is True
     for field in ("disable_param_buffers_cpu_backup", "disable_grad_buffers_cpu_backup"):
         assert getattr(args, field, False) is (backend == "cuda")
     if backend == "npu":
         calls = []
         monkeypatch.setattr(patches, "after_megatron_args", calls.append)
-        platform_integration.current_integration().megatron.after_args(args)
+        AscendMegatronIntegration().after_args(args)
         assert calls == [args]

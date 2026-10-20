@@ -197,17 +197,17 @@ def _module():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "backend,is_sender", [("nccl", True), ("nccl", False), ("hccl", True), ("hccl", False), ("ipc", True)]
+    "backend,is_sender",
+    [("nccl", True), ("nccl", False), ("hccl", True), ("hccl", False), ("other", True), ("ipc", True)],
 )
 def test_connect_uses_native_ipc_and_nccl_trainers(update_module, monkeypatch, backend, is_sender):
     updater = _updater(update_module)
     old_trainer = RecordingTrainer(object(), backend=backend, is_sender=is_sender)
-    updater._native_trainers = [old_trainer]
     engines = [RecordingEngine(), RecordingEngine()]
     ipc_created = []
     nccl_created = []
     old_engine = RecordingEngine()
-    updater._distributed_rollout_engines = [old_engine]
+    updater._native_trainers = [(old_trainer, [old_engine] if backend != "ipc" else None)]
     _install_ipc_trainer_stubs(monkeypatch, ipc_created)
     if backend == "hccl":
         from vime_plugins.ascend.weight_transfer import NpuWeightTransfer
@@ -234,7 +234,7 @@ def test_connect_uses_native_ipc_and_nccl_trainers(update_module, monkeypatch, b
     assert old_trainer.shutdown_calls == 1
     assert engines[0].destroy_weights_update_group.calls == []
     assert engines[1].destroy_weights_update_group.calls == []
-    assert len(old_engine.destroy_weights_update_group.calls) == int(backend in {"nccl", "hccl"} and is_sender)
+    assert len(old_engine.destroy_weights_update_group.calls) == int(backend != "ipc" and is_sender)
     assert len(updater._native_trainers) == 2
     assert ipc_created[0][0].packed is True
     assert ipc_created[0][2] is updater._source
@@ -280,7 +280,7 @@ def test_native_update_runs_main_and_draft_lifecycles(update_module, monkeypatch
     updater._all_rollout_engines = [engine]
     client = update_module.VimeRayWeightSyncClient([engine], lambda: updater.weight_version)
     trainer = RecordingTrainer(client)
-    updater._native_trainers = [trainer]
+    updater._native_trainers = [(trainer, None)]
     monkeypatch.setattr(update_module.dist, "barrier", lambda *args, **kwargs: None)
 
     updater.update_weights()
@@ -304,7 +304,7 @@ def test_native_dspark_update_uses_draft_source_and_lifecycle(update_module, mon
     updater._all_rollout_engines = [engine]
     client = update_module.VimeRayWeightSyncClient([engine], lambda: updater.weight_version)
     trainer = RecordingTrainer(client, source=updater._source)
-    updater._native_trainers = [trainer]
+    updater._native_trainers = [(trainer, None)]
     monkeypatch.setattr(update_module.dist, "barrier", lambda *args, **kwargs: None)
 
     updater.update_weights()
@@ -325,7 +325,7 @@ def test_rank_local_experts_keep_dspark_draft_update(update_module, monkeypatch)
     updater.connect_rollout_engines([engine], object(), engine_gpu_counts=[2], engine_gpu_offsets=[0])
 
     assert len(updater._native_trainers) == 1
-    trainer = updater._native_trainers[0]
+    trainer, _ = updater._native_trainers[0]
     trainer.source = updater._source
     updater._update_rollout_weights = MagicMock()
     updater.update_weights()
@@ -344,7 +344,7 @@ def test_failed_native_update_does_not_resume_generation(update_module, monkeypa
     engine = RecordingEngine()
     updater._all_rollout_engines = [engine]
     client = update_module.VimeRayWeightSyncClient([engine], lambda: updater.weight_version)
-    updater._native_trainers = [RecordingTrainer(client, fail=True)]
+    updater._native_trainers = [(RecordingTrainer(client, fail=True), None)]
     monkeypatch.setattr(update_module.dist, "barrier", lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="transfer failed"):

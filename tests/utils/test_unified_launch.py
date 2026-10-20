@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 import torch
 
-from vime.utils import accelerator, platform_integration
+from vime.utils import accelerator
 from vime.utils.external_utils import command_utils as commands
 from vime.utils.external_utils.launch import launch_inputs, shell_exports
 
@@ -16,7 +16,6 @@ from vime.utils.external_utils.launch import launch_inputs, shell_exports
 @pytest.fixture
 def launch_case(monkeypatch):
     monkeypatch.setattr(accelerator, "_ACCELERATOR", None)
-    monkeypatch.setattr(platform_integration, "_selected", None)
     monkeypatch.delenv("VIME_PLUGINS", raising=False)
     monkeypatch.setenv("VIME_ACCELERATOR", "cuda")
     monkeypatch.setenv("VIME_SCRIPT_EXTERNAL_RAY", "0")
@@ -86,6 +85,22 @@ def test_callback_environment_changes_reach_submission(launch_case, monkeypatch,
 
 
 @pytest.mark.unit
+def test_implicit_gpu_reads_configuration_only_after_callback(launch_case, monkeypatch):
+    monkeypatch.delenv("VIME_ACCELERATOR")
+    monkeypatch.setattr(accelerator, "describe_accelerator", accelerator.CUDAAccelerator)
+    config = commands.ExecuteTrainConfig(extra_env_vars="resolved-by-callback")
+
+    def callback():
+        config.extra_env_vars = '{"LABEL": "ready"}'
+
+    commands.execute_train("", 1, None, before_ray_job_submit=callback, config=config)
+    env = submitted_env(launch_case)
+    assert env["LABEL"] == "ready"
+    assert "VIME_ACCELERATOR" not in env
+    assert "VIME_PLUGINS" not in env
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("external,running", [(False, True), (True, False)])
 def test_reuse_preserves_detached_engines(launch_case, monkeypatch, external, running):
     monkeypatch.setenv("VIME_ACCELERATOR", "npu")
@@ -130,8 +145,6 @@ def test_conflicting_child_support_rejected_before_start(launch_case, key, value
 
 @pytest.mark.unit
 def test_custom_resource_with_empty_environment_still_uses_common_lifecycle(launch_case, monkeypatch):
-    from vime.backends.megatron_integration import MegatronIntegration
-    from vime.backends.vllm_weight_transfer import WeightTransfer
     from vime.utils.device_env import DeviceEnv
 
     class EmptyEnv(DeviceEnv):
@@ -146,9 +159,7 @@ def test_custom_resource_with_empty_environment_still_uses_common_lifecycle(laun
     monkeypatch.setattr(accelerator, "_REGISTRY", accelerator._REGISTRY.copy())
     accelerator.register_accelerator("third", Third, lambda: False)
     module = ModuleType("third_support")
-    module.build_integration = lambda: platform_integration.PlatformIntegration(
-        EmptyEnv(), MegatronIntegration(), WeightTransfer()
-    )
+    module.env = EmptyEnv()
     monkeypatch.setitem(sys.modules, module.__name__, module)
     monkeypatch.setenv("VIME_ACCELERATOR", "third")
     monkeypatch.setenv("VIME_PLUGINS", module.__name__)

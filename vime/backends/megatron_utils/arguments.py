@@ -76,6 +76,16 @@ def _is_moe_config(hf_config):
 def validate_args(args):
     """Run megatron's own validate_args plus vime-specific megatron validations."""
 
+    # main's automatic offload policy is implemented by memory.py wrapping this
+    # allocation entry point. Older dependencies keep their own defaults;
+    # backend initialization rejects unsupported explicit flags.
+    if getattr(args, "offload_train", False):
+        from megatron.core.distributed.param_and_grad_buffer import _ParamAndGradBuffer
+
+        if hasattr(_ParamAndGradBuffer, "_allocate_buffer"):
+            args.disable_grad_buffers_cpu_backup = True
+            args.disable_param_buffers_cpu_backup = True
+
     _megatron_validate_args(args)
 
     # always use varlen

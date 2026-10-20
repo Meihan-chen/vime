@@ -12,6 +12,7 @@ from vime.ray import resources
 from vime.ray.training_recovery import configure_recovery_checkpoint, training_recovery_enabled
 from vime.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST, add_default_ray_env_vars
 from vime.utils.device_env import current as current_device_env
+from vime.utils.device_env import for_child
 from vime.utils.weight_sync import should_flush_cache
 
 
@@ -77,7 +78,7 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
-        env_vars = current_device_env().train_actor_env(self.args, env_vars)
+        env_vars = for_child(current_device_env().train_actor_env(self.args, env_vars))
 
         # We cannot do routing replay for critic.
         if self.args.use_routing_replay and self.role == "actor":

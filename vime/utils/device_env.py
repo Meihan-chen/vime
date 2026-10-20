@@ -89,38 +89,34 @@ class DeviceEnv:
         return dict(base_env)
 
 
-class _SelectedDeviceEnv(DeviceEnv):
-    def __init__(self, policy: DeviceEnv, name: str, module: str):
-        self.policy, self.name, self.module = policy, name, module
+def for_child(env_vars: Mapping[str, str]) -> dict[str, str]:
+    """Propagate explicit selection at process boundaries; keep GPU defaults.
 
-    def _pin(self, env: Mapping[str, str]) -> dict[str, str]:
-        result = dict(env)
-        required = {"VIME_ACCELERATOR": self.name, "VIME_PLUGINS": self.module}
-        for key, value in required.items():
-            if key in result and result[key] != value:
-                raise ValueError(f"Child {key} must match the selected platform integration")
-            result[key] = value
-        return result
+    Check supplied selectors even without propagation, so a child cannot
+    silently select a different backend.
+    """
+    from vime.utils import accelerator
+    from vime.utils.platform_integration import plugin_module
 
-    def train_actor_env(self, args, env_vars=None):
-        return self._pin(self.policy.train_actor_env(args, env_vars))
+    name = accelerator.describe_accelerator().name
+    module = plugin_module()
+    required = {"VIME_ACCELERATOR": name, "VIME_PLUGINS": module or ""}
+    env = dict(env_vars)
+    for key, value in required.items():
+        if key in env and env[key] != value:
+            raise ValueError(f"Child {key} must match the selected accelerator")
+    explicit = os.environ.get("VIME_ACCELERATOR", "").strip().lower() not in {"", "auto"}
+    if explicit or module is not None or "VIME_PLUGINS" in os.environ:
+        env["VIME_ACCELERATOR"] = name
+        if module is not None or "VIME_PLUGINS" in os.environ:
+            env["VIME_PLUGINS"] = module or ""
+    return env
 
-    def engine_actor_env(self, args, env_vars=None):
-        return self._pin(self.policy.engine_actor_env(args, env_vars))
 
-    def launch_env(self):
-        return self._pin(self.policy.launch_env())
-
-    def launch_job_env(self):
-        return self._pin(self.policy.launch_job_env())
-
-    def serving_subprocess_env(self, base_env, *, visible_devices, colocate):
-        return self._pin(
-            self.policy.serving_subprocess_env(base_env, visible_devices=visible_devices, colocate=colocate)
-        )
+_default = DeviceEnv()
 
 
 def current() -> DeviceEnv:
-    from vime.utils.platform_integration import current_integration
+    from vime.utils.platform_integration import component
 
-    return current_integration().env
+    return component("env", _default)

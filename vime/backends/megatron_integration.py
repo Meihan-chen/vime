@@ -8,15 +8,11 @@ class MegatronIntegration:
     """Default training behavior, with explicit installation and allocation stages."""
 
     supports_disable = True
-    supports_buffer_cpu_backup_disable = True
 
     def before_import(self) -> None:
         pass
 
     def after_args(self, args: Any) -> None:
-        pass
-
-    def after_checkpoint_setup(self, default_planner: Any) -> None:
         pass
 
     def training_region(self, offload_train: bool):
@@ -26,7 +22,10 @@ class MegatronIntegration:
         pass
 
 
-def current() -> MegatronIntegration:
-    from vime.utils.platform_integration import current_integration
+_default = MegatronIntegration()
 
-    return current_integration().megatron
+
+def current() -> MegatronIntegration:
+    from vime.utils.platform_integration import component
+
+    return component("megatron", _default)

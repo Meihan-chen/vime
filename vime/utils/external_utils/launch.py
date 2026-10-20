@@ -14,11 +14,6 @@ class LaunchInputs:
     ray_args: str
     start_env: dict[str, str]
 
-    def validate_overrides(self, env: dict[str, str]) -> None:
-        for key in ("VIME_ACCELERATOR", "VIME_PLUGINS"):
-            if key in self.start_env and key in env and env[key] != self.start_env[key]:
-                raise ValueError(f"Child {key} must match the selected accelerator support")
-
 
 def shell_exports(env: dict[str, str]) -> str:
     for key in env:
@@ -29,7 +24,7 @@ def shell_exports(env: dict[str, str]) -> str:
 
 def launch_inputs(num_devices: int) -> LaunchInputs:
     from vime.utils import accelerator
-    from vime.utils.device_env import current
+    from vime.utils.device_env import current, for_child
 
     device = accelerator.describe_accelerator()
     env = current()
@@ -37,4 +32,4 @@ def launch_inputs(num_devices: int) -> LaunchInputs:
         flags = f"--num-gpus {num_devices}"
     else:
         flags = "--num-gpus 0 --resources " + shlex.quote(json.dumps({device.ray_resource_name: num_devices}))
-    return LaunchInputs(device.name, flags, env.launch_env())
+    return LaunchInputs(device.name, flags, for_child(env.launch_env()))

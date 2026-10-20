@@ -577,9 +577,7 @@ def test_fc1_loading_uses_parameter_partition_metadata(monkeypatch, expert, para
     monkeypatch.setattr(mpu, "get_expert_tensor_parallel_rank", lambda: parallel_size - 1 if expert else 0)
     name = "decoder.layers.0.mlp." + ("experts.linear_fc1.weight0" if expert else "linear_fc1.weight")
     weight = torch.arange(16 * 8).reshape(16, 8)
-    parameter = types.SimpleNamespace(
-        tensor_model_parallel=True, partition_dim=0, partition_stride=1
-    )
+    parameter = types.SimpleNamespace(tensor_model_parallel=True, partition_dim=0, partition_stride=1)
     shard = shard_mcore_tensor(name, weight, parameter)
     gate, up = weight.chunk(2)
     assert torch.equal(shard, torch.cat((gate.chunk(parallel_size)[-1], up.chunk(parallel_size)[-1])))

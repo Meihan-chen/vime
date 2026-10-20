@@ -9,7 +9,6 @@ from vime.backends.megatron_integration import MegatronIntegration
 
 class AscendMegatronIntegration(MegatronIntegration):
     supports_disable = False
-    supports_buffer_cpu_backup_disable = False
 
     def __init__(self):
         self._import_state = "new"
@@ -29,8 +28,8 @@ class AscendMegatronIntegration(MegatronIntegration):
             self._import_state = "done"
 
     def after_args(self, args: Any) -> None:
-        # The pinned NPU Megatron has no _ParamAndGradBuffer._allocate_buffer.
-        # main's new per-buffer policy would otherwise silently do nothing.
+        # The pinned dependency accepts these flags but does not implement
+        # their per-buffer backup policy. Do not ignore explicit requests.
         for flag in ("disable_param_buffers_cpu_backup", "disable_grad_buffers_cpu_backup"):
             if getattr(args, flag, False):
                 raise ValueError(f"{flag}=True is unsupported by the pinned Ascend Megatron stack")
@@ -42,11 +41,6 @@ class AscendMegatronIntegration(MegatronIntegration):
 
             after_megatron_args(args)
             self._args_failed = False
-
-    def after_checkpoint_setup(self, default_planner: Any) -> None:
-        from .patches import relax_global_plan_validation
-
-        relax_global_plan_validation(default_planner)
 
     def training_region(self, offload_train: bool):
         if not offload_train:

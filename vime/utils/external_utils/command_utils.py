@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from vime.utils.device_env import current as current_device_env
+from vime.utils.device_env import for_child
 from vime.utils.external_utils.launch import launch_inputs, shell_exports
 from vime.utils.external_utils.typer_utils import dataclass_cli
 from vime.utils.misc import exec_command
@@ -108,11 +110,12 @@ def execute_train(
         config = ExecuteTrainConfig()
 
     launch = launch_inputs(num_gpus_per_node)
-    start_overrides = {**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)}
-    launch.validate_overrides(start_overrides)
     # User overrides for platform-required startup variables must reach the
     # raylet too. Other job-only overrides retain main's original scope.
-    start_env = {key: start_overrides.get(key, value) for key, value in launch.start_env.items()}
+    start_env = launch.start_env
+    if start_env:
+        start_overrides = for_child({**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)})
+        start_env = {key: start_overrides.get(key, value) for key, value in start_env.items()}
 
     external_ray = get_bool_env_var("VIME_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
@@ -140,10 +143,7 @@ def execute_train(
         f()
 
     # Like main, read job defaults and caller/config overrides after the callback.
-    from vime.utils.device_env import current as current_device_env
-
-    extra_env_vars = {**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)}
-    launch.validate_overrides(extra_env_vars)
+    extra_env_vars = for_child({**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)})
     runtime_env_json = json.dumps(
         {
             "env_vars": {

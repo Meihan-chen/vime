@@ -6,13 +6,9 @@ AscendMegatronIntegration calls these functions at fixed Megatron lifecycle stag
 from __future__ import annotations
 
 import importlib
-import logging
-import os
 from typing import Any
 
 from vime.utils import accelerator
-
-logger = logging.getLogger(__name__)
 
 
 def _install_safe_empty_cache() -> None:
@@ -49,21 +45,3 @@ def after_megatron_args(args: Any) -> None:
     # does not reinstall the override on its own.
     attention = importlib.import_module("vime_plugins.ascend.attention_patch")
     attention.DotProductAttention.forward = attention.npu_dot_product_attention_forward
-
-
-def relax_global_plan_validation(default_planner: Any) -> None:
-    """Explicit legacy workaround; validation stays enabled by default.
-
-    This escape hatch is only for diagnosing the pinned Ascend sharding issue.
-    It is never enabled by the image or normal launcher.
-    """
-    if os.environ.get("VIME_NPU_SKIP_CHECKPOINT_VALIDATION", "0") != "1":
-        return
-    if not callable(getattr(default_planner, "_validate_global_plan", None)):
-        raise RuntimeError("Ascend checkpoint workaround target _validate_global_plan is missing")
-    logger.warning("VIME_NPU_SKIP_CHECKPOINT_VALIDATION=1 disables checkpoint shard integrity validation")
-
-    def _validate_global_plan(global_plan, metadata):
-        return True
-
-    default_planner._validate_global_plan = _validate_global_plan

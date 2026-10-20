@@ -15,7 +15,6 @@ from megatron.training.arguments import parse_args, validate_args
 from megatron.training.checkpointing import get_checkpoint_name, get_checkpoint_tracker_filename, save_checkpoint
 from megatron.training.training import get_model
 
-from vime.backends.megatron_integration import current as current_megatron_integration
 from vime.backends.megatron_utils.arguments import set_default_megatron_args
 from vime.backends.megatron_utils.hf_to_megatron import load_hf_weights
 from vime.backends.megatron_utils.initialize import init
@@ -118,7 +117,6 @@ def main():
     )
     args = get_args()
     init(args)
-    current_megatron_integration().after_args(args)
 
     model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
 

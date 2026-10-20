@@ -20,16 +20,16 @@ class WeightTransfer:
             return NCCLTrainerInitInfo(**kwargs)
         raise ValueError(f"Unknown weight transport: {transport!r}")
 
-    def requires_remote_cleanup(self, trainer: Any) -> bool:
-        return trainer.init_info_cls.backend == self.backend("distributed")
-
     def ipc_handle_key(self) -> str:
         import torch
 
         return str(torch.cuda.get_device_properties(torch.cuda.current_device()).uuid)
 
 
-def current() -> WeightTransfer:
-    from vime.utils.platform_integration import current_integration
+_default = WeightTransfer()
 
-    return current_integration().weight_transfer
+
+def current() -> WeightTransfer:
+    from vime.utils.platform_integration import component
+
+    return component("weight_transfer", _default)

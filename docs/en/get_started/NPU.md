@@ -73,14 +73,13 @@ processes.
 | Setting | Behavior |
 |---|---|
 | `VIME_ACCELERATOR=npu` | Selects NPU. Metadata queries work without a local device; execution requires a visible NPU and runtime. |
-| `VIME_PLUGINS` unset | Builds complete Ascend support. GPU defaults remain explicit defaults. |
-| `VIME_PLUGINS=your.module` | Calls that module's `build_integration()` once; it must return every required component. |
-| `VIME_PLUGINS=` | Allows standalone device APIs. NPU training/serving fails because complete support is missing. |
+| `VIME_PLUGINS` unset | Loads Ascend components for NPU; other built-in devices retain main defaults. |
+| `VIME_PLUGINS=your.module` | Reads the component used by the current workflow (`env`, `megatron`, or `weight_transfer`). |
+| `VIME_PLUGINS=` | Allows standalone device APIs. NPU workflows requiring backend components fail explicitly. |
 | `VIME_NPU_PYTHONPATH`, `VIME_NPU_LD_LIBRARY_PATH` | Override the image-layout defaults for launch paths. |
 | Buffer CPU backup | NPU offload keeps the full training region backed up. Main's automatic per-buffer backup suppression is enabled only where supported. Explicit `disable_param_buffers_cpu_backup=True` or `disable_grad_buffers_cpu_backup=True` configuration is rejected on this NPU pin. |
-| `VIME_NPU_SKIP_CHECKPOINT_VALIDATION=1` | Explicit diagnostic escape hatch for the legacy shard-layout issue. Disables integrity validation and emits a warning. Keep unset for acceptance. |
 
-A CPU driver can inspect support, construct Ray resource/environment inputs and
+A CPU driver can inspect device metadata, construct Ray resource/environment inputs and
 load backend definitions. Loading Megatron backend definitions still requires
 the matching vendor libraries, even when the driver itself has no NPU.
 
