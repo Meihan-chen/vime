@@ -139,8 +139,6 @@ class NpuRayResourceSpec(RayResourceSpec):
             return env
 
         env["TMS_HOOK_MODE"] = "torch"
-        env["TMS_REGION_TAG"] = "training"
-        env["TMS_ENABLE_CPU_BACKUP"] = "1"
         if getattr(args, "colocate", False):
             env["PYTORCH_NPU_ALLOC_CONF"] = "expandable_segments:False"
         cann_python_path = _cann_python_site_packages()
@@ -222,11 +220,6 @@ class NpuTrainingBootstrap(TrainingBootstrap):
             # is imported. Apply the NPU attention override afterwards.
             importlib.import_module("megatron_adaptor")
             importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
-        except Exception:
-            # A failed bootstrap may be retried after the runtime environment is
-            # corrected; never leave a partially initialized success marker.
-            raise
-        else:
             self._bootstrapped = True
         finally:
             self._bootstrapping = False

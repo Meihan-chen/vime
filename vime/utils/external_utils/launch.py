@@ -73,7 +73,6 @@ register(
             "HCCL_CONNECT_TIMEOUT": "7200",
             "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False",
             "VLLM_DISABLE_COMPILE_CACHE": "1",
-            "VLLM_ASCEND_ENABLE_NZ": "0",
             "HYDRA_FULL_ERROR": "1",
             "TRANSFORMERS_VERBOSITY": "error",  # silence transformers image-processing log spam
         },

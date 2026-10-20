@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from argparse import Namespace
+from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -110,12 +111,29 @@ def test_npu_runtime_env_is_scoped_to_npu_provider(monkeypatch, tmp_path):
     rollout_env = current_platform().ray.rollout_runtime_env(args, {"BASE": "1"})
 
     assert train_env["TMS_HOOK_MODE"] == "torch"
-    assert train_env["TMS_REGION_TAG"] == "training"
-    assert train_env["TMS_ENABLE_CPU_BACKUP"] == "1"
+    assert "TMS_REGION_TAG" not in train_env
+    assert "TMS_ENABLE_CPU_BACKUP" not in train_env
     assert train_env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:False"
     assert str(toolkit / "python" / "site-packages") in train_env["PYTHONPATH"]
     assert rollout_env["VLLM_USE_AOT_COMPILE"] == "0"
     assert rollout_env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:False"
+
+
+@pytest.mark.parametrize("offload_train", [False, True])
+def test_npu_training_context_explicitly_enables_cpu_backup(monkeypatch, offload_train):
+    monkeypatch.setenv("VIME_PLATFORM", "npu")
+    calls = []
+
+    def region(**kwargs):
+        calls.append(kwargs)
+        return nullcontext()
+
+    module = ModuleType("torch_memory_saver")
+    module.torch_memory_saver = SimpleNamespace(region=region)
+    monkeypatch.setitem(sys.modules, "torch_memory_saver", module)
+
+    with current_platform().megatron.training_context(offload_train):
+        assert calls == ([{"tag": "training", "enable_cpu_backup": True}] if offload_train else [])
 
 
 def test_npu_vllm_env_replaces_cuda_and_rocm_visibility(monkeypatch):
