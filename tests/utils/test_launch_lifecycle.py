@@ -51,6 +51,39 @@ def test_npu_helper_paths_preserve_adaptor_and_cann_environment():
 
 
 @pytest.mark.parametrize("platform_name", ["cuda", "npu"])
+@pytest.mark.parametrize("multinode", [False, True])
+def test_convert_checkpoint_uses_main_command_on_all_platforms(monkeypatch, tmp_path, platform_name, multinode):
+    execute = Mock()
+    monkeypatch.setattr(command_utils, "exec_command", execute)
+    monkeypatch.setattr(command_utils, "current_platform", lambda: PLATFORMS[platform_name])
+    monkeypatch.setenv("SLURM_JOB_HOSTNAMES", "node0\nnode1")
+    monkeypatch.setenv("SLURM_NODEID", "1")
+
+    command_utils.convert_checkpoint(
+        "model",
+        "qwen3-4B",
+        4,
+        multinode=multinode,
+        dir_dst=str(tmp_path),
+        hf_checkpoint="/models/hf",
+        extra_args=" --use-cpu-initialization ",
+    )
+
+    execute.assert_called_once()
+    command = execute.call_args.args[0]
+    assert "scripts/models/qwen3-4B.sh" in command
+    assert "torchrun --nproc-per-node 4" in command
+    assert "tools/convert_hf_to_torch_dist.py" in command
+    assert f"--hf-checkpoint /models/hf --save {tmp_path}/model_torch_dist --use-cpu-initialization" in command
+    assert ("--master-addr node0 --master-port 23456 --nnodes=2 --node-rank 1" in command) == multinode
+
+    (tmp_path / "model_torch_dist").mkdir()
+    execute.reset_mock()
+    command_utils.convert_checkpoint("model", "qwen3-4B", 4, dir_dst=str(tmp_path))
+    execute.assert_not_called()
+
+
+@pytest.mark.parametrize("platform_name", ["cuda", "npu"])
 @pytest.mark.parametrize("external_ray,live_head", [(False, False), (False, True), (True, True)])
 @pytest.mark.parametrize("submit", [False, True])
 def test_execute_train_preserves_cluster_and_serving(monkeypatch, platform_name, external_ray, live_head, submit):
