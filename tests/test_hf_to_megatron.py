@@ -33,7 +33,9 @@ from vime.backends.megatron_utils.hf_to_megatron.qwen import (
 )
 from vime.backends.megatron_utils.hf_to_megatron.qwen3_next import qwen3_next_hf_tensor
 from vime.backends.megatron_utils.hf_to_megatron.qwen3_omni import qwen3_omni_hf_tensor
+from vime.backends.megatron_utils.hf_to_megatron.qwen3_vl import qwen3_vl_hf_tensor
 from vime.backends.megatron_utils.megatron_to_hf import _convert_to_hf_core, convert_to_hf
+from vime.backends.megatron_utils.megatron_to_hf.qwen3_vl import convert_qwen3vl_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.deepseekv3 import convert_deepseekv3_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.glm4 import convert_glm4_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.glm4moe import convert_glm4moe_to_hf
@@ -442,6 +444,7 @@ def test_loader_scope_stays_explicit():
         "qwen3_moe",
         "qwen3_next",
         "qwen3_omni_moe",
+        "qwen3_vl",
     }
 
 
@@ -458,6 +461,72 @@ def test_reader_dequantizes_block_scaled_fp8(tmp_path):
 
     assert loaded.dtype == torch.bfloat16
     assert torch.equal(loaded, weight.to(torch.bfloat16) * 2)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("model_name", "prefix"), [("qwen3", ""), ("qwen3_vl", "language_model.")])
+@pytest.mark.parametrize(
+    ("name", "shape", "is_vocab"),
+    [
+        ("embedding.word_embeddings.weight", (16, 8), True),
+        ("output_layer.weight", (16, 8), True),
+        ("decoder.final_layernorm.weight", (16,), False),
+    ],
+)
+def test_native_export_removes_only_vocab_padding(model_name, prefix, name, shape, is_vocab):
+    args = types.SimpleNamespace(vocab_size=8)
+    weight = torch.randn(shape)
+    [(_, exported)] = convert_to_hf(args, model_name, "module.module." + prefix + name, weight)
+    expected = weight[: args.vocab_size] if is_vocab else weight
+    assert torch.equal(exported, expected)
+    if not is_vocab:
+        assert exported is weight
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "shape"),
+    [
+        ("embedding.word_embeddings.weight", (16, 8)),
+        ("output_layer.weight", (16, 8)),
+        ("decoder.final_layernorm.weight", (8,)),
+        ("decoder.layers.0.self_attention.linear_qkv.weight", (16, 8)),
+        ("decoder.layers.0.self_attention.linear_qkv.bias", (16,)),
+        ("decoder.layers.0.self_attention.linear_proj.weight", (8, 8)),
+        ("decoder.layers.0.self_attention.linear_qkv.layer_norm_weight", (8,)),
+        ("decoder.layers.0.self_attention.q_layernorm.weight", (2,)),
+        ("decoder.layers.0.self_attention.k_layernorm.weight", (2,)),
+        ("decoder.layers.0.mlp.linear_fc1.weight", (24, 8)),
+        ("decoder.layers.0.mlp.linear_fc2.weight", (8, 12)),
+        ("decoder.layers.0.mlp.linear_fc1.layer_norm_weight", (8,)),
+    ],
+)
+def test_qwen3_vl_language_round_trip(name, shape):
+    name = "module.module.language_model." + name
+    weight = torch.randn(shape)
+    config = types.SimpleNamespace(
+        tie_word_embeddings=False,
+        text_config=types.SimpleNamespace(
+            hidden_size=8, num_attention_heads=4, num_key_value_heads=2, head_dim=2, tie_word_embeddings=False
+        ),
+    )
+    reader = Reader(**dict(convert_qwen3vl_to_hf(_EXPORT_ARGS, name, weight)))
+    assert torch.equal(qwen3_vl_hf_tensor(name, reader, config), weight)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("top_tied", "text_tied", "has_head"), [(True, False, True), (False, True, True), (False, False, False)]
+)
+def test_qwen3_vl_tied_output_uses_language_embedding(top_tied, text_tied, has_head):
+    embedding = torch.randn(8, 4)
+    tensors = {"model.language_model.embed_tokens.weight": embedding}
+    if has_head:
+        tensors["lm_head.weight"] = torch.zeros_like(embedding)
+    config = types.SimpleNamespace(
+        tie_word_embeddings=top_tied, text_config=types.SimpleNamespace(tie_word_embeddings=text_tied)
+    )
+    assert qwen3_vl_hf_tensor("output_layer.weight", Reader(**tensors), config) is embedding
 
 
 if __name__ == "__main__":
