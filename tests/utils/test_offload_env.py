@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType, SimpleNamespace
+
 import pytest
 
-from vime.utils.device_env import cuda_offload_env_vars
+from vime.utils.device_env import DeviceEnv
+
+
+@pytest.fixture
+def tms_library_dir(monkeypatch, tmp_path):
+    module = ModuleType("torch_memory_saver")
+    module.__file__ = str(tmp_path / "torch_memory_saver" / "__init__.py")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    return tmp_path
 
 
 @pytest.mark.unit
@@ -16,42 +27,42 @@ from vime.utils.device_env import cuda_offload_env_vars
         "torch_memory_saver_hook_mode_preload.abi3.so",
     ],
 )
-def test_cuda_offload_sets_preload_and_tms_switches(tmp_path, library):
-    (tmp_path / library).write_bytes(b"")
+def test_cuda_offload_sets_preload_and_tms_switches(tms_library_dir, library):
+    (tms_library_dir / library).write_bytes(b"")
 
-    env = cuda_offload_env_vars({"EXISTING": "keep"}, library_dir=str(tmp_path))
+    env = DeviceEnv().train_offload_env(SimpleNamespace(), {"EXISTING": "keep"})
 
-    assert env["LD_PRELOAD"] == str(tmp_path / library)
+    assert env["LD_PRELOAD"] == str(tms_library_dir / library)
     assert env["TMS_INIT_ENABLE"] == "1"
     assert env["TMS_INIT_ENABLE_CPU_BACKUP"] == "1"
     assert env["EXISTING"] == "keep", "the helper must not drop caller-supplied variables"
 
 
 @pytest.mark.unit
-def test_cuda_offload_prefers_the_newest_cuda_library(tmp_path):
+def test_cuda_offload_prefers_the_newest_cuda_library(tms_library_dir):
     for library in (
         "torch_memory_saver_hook_mode_preload_cu12.abi3.so",
         "torch_memory_saver_hook_mode_preload_cu13.abi3.so",
     ):
-        (tmp_path / library).write_bytes(b"")
+        (tms_library_dir / library).write_bytes(b"")
 
-    env = cuda_offload_env_vars({}, library_dir=str(tmp_path))
+    env = DeviceEnv().train_offload_env(SimpleNamespace(), {})
 
     assert env["LD_PRELOAD"].endswith("preload_cu13.abi3.so")
 
 
 @pytest.mark.unit
-def test_missing_tms_library_raises(tmp_path):
+def test_missing_tms_library_raises(tms_library_dir):
     with pytest.raises(FileNotFoundError, match="torch_memory_saver"):
-        cuda_offload_env_vars({}, library_dir=str(tmp_path / "nonexistent"))
+        DeviceEnv().train_offload_env(SimpleNamespace(), {})
 
 
 @pytest.mark.unit
-def test_helper_does_not_mutate_the_caller_mapping(tmp_path):
-    (tmp_path / "torch_memory_saver_hook_mode_preload.abi3.so").write_bytes(b"")
+def test_offload_env_does_not_mutate_the_caller_mapping(tms_library_dir):
+    (tms_library_dir / "torch_memory_saver_hook_mode_preload.abi3.so").write_bytes(b"")
     original = {"EXISTING": "keep"}
 
-    cuda_offload_env_vars(original, library_dir=str(tmp_path))
+    DeviceEnv().train_offload_env(SimpleNamespace(), original)
 
     assert original == {"EXISTING": "keep"}
 
@@ -70,26 +81,3 @@ def test_ascend_policy_refuses_to_suspend_an_allocated_region():
     from vime_plugins.ascend.training import AscendMegatronIntegration
 
     assert AscendMegatronIntegration().supports_disable is False
-
-
-@pytest.mark.unit
-def test_default_train_actor_env_carries_the_cuda_preload(monkeypatch):
-    import types
-
-    from vime.utils import device_env
-
-    monkeypatch.setattr(device_env, "cuda_offload_env_vars", lambda env: {**env, "LD_PRELOAD": "stub"})
-    args = types.SimpleNamespace(offload_train=True, train_backend="megatron")
-
-    assert device_env.DeviceEnv().train_actor_env(args, {"A": "1"}) == {"A": "1", "LD_PRELOAD": "stub"}
-
-
-@pytest.mark.unit
-def test_default_train_actor_env_leaves_the_env_alone_without_offload():
-    import types
-
-    from vime.utils.device_env import DeviceEnv
-
-    args = types.SimpleNamespace(offload_train=False, train_backend="megatron")
-
-    assert DeviceEnv().train_actor_env(args, {"A": "1"}) == {"A": "1"}

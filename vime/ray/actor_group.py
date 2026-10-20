@@ -78,7 +78,9 @@ class RayTrainGroup:
             **self.args.train_env_vars,
         }
 
-        env_vars = for_child(current_device_env().train_actor_env(self.args, env_vars))
+        if self.args.offload_train:
+            env_vars = current_device_env().train_offload_env(self.args, env_vars)
+        env_vars = for_child(env_vars)
 
         # We cannot do routing replay for critic.
         if self.args.use_routing_replay and self.role == "actor":

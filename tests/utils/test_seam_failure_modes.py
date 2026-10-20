@@ -7,11 +7,9 @@ and not its support package. These pin which case gets which answer.
 
 from __future__ import annotations
 
-import argparse
-
 import pytest
 
-from vime.utils import accelerator, device_env
+from vime.utils import accelerator
 
 
 @pytest.mark.unit
@@ -46,12 +44,3 @@ def test_an_unknown_requested_backend_is_still_an_error(monkeypatch):
 
     with pytest.raises(ValueError, match="nosuchdevice"):
         accelerator.ray_resource_name()
-
-
-@pytest.mark.unit
-def test_offload_env_follows_offload_train_alone():
-    # The shared default must match what the GPU path did before the seam.
-    production_shaped = argparse.Namespace(offload_train=True, colocate=True)
-
-    assert device_env.offload_requested(production_shaped) is True
-    assert device_env.offload_requested(argparse.Namespace(offload_train=False)) is False

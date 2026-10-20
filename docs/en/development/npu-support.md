@@ -29,6 +29,9 @@ serving subprocesses, rejecting conflicting selectors. Implicit GPU environments
 receive no new selection variables. Startup inputs are read before Ray starts;
 submission defaults and caller/config overrides are read after the callback,
 matching main. CUDA's TMS library search and environment contract remain intact.
+The training actor keeps main's explicit `if self.args.offload_train` guard.
+Only the enabled branch calls `train_offload_env()` for device-specific values;
+device selection is forwarded independently of offload.
 
 ## Adding another backend
 

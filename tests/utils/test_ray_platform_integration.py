@@ -121,7 +121,8 @@ def test_ray_noset_visible_devices_keeps_ascend_entry():
     assert "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES" in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 
 
-def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
+@pytest.mark.parametrize("offload_train", [False, True])
+def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch, offload_train):
     from vime.ray import actor_group as actor_group_module
 
     runtime_env_inputs = []
@@ -129,10 +130,12 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
         actor_options=Mock(side_effect=lambda fraction: {"num_gpus": 0, "resources": {"ACCEL": fraction}}),
     )
     offload_policy = SimpleNamespace(
-        train_actor_env=lambda args, env: runtime_env_inputs.append((args, dict(env))) or {**env, "PLATFORM_ENV": "1"},
+        train_offload_env=lambda args, env: runtime_env_inputs.append((args, dict(env)))
+        or {**env, "PLATFORM_ENV": "1"},
     )
+    current_env = Mock(return_value=offload_policy)
     monkeypatch.setattr(actor_group_module.resources, "actor_options", ray_ops.actor_options)
-    monkeypatch.setattr(actor_group_module, "current_device_env", lambda: offload_policy)
+    monkeypatch.setattr(actor_group_module, "current_device_env", current_env)
 
     actor_module = types.ModuleType("vime.backends.megatron_utils.actor")
     actor_module.MegatronTrainRayActor = object
@@ -162,7 +165,7 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
 
     args = SimpleNamespace(
         train_env_vars={"USER_ENV": "yes"},
-        offload_train=True,
+        offload_train=offload_train,
         train_backend="megatron",
         colocate=False,
         use_routing_replay=False,
@@ -176,9 +179,16 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
     )
     assert group.create() == [0]
 
-    assert vars(runtime_env_inputs[0][0]) == {**vars(args), "update_weight_start_version": 0}
-    assert runtime_env_inputs[0][1]["USER_ENV"] == "yes"
-    assert remote_declarations[0]["runtime_env"]["env_vars"]["PLATFORM_ENV"] == "1"
+    actor_env = remote_declarations[0]["runtime_env"]["env_vars"]
+    assert actor_env["USER_ENV"] == "yes"
+    if offload_train:
+        assert vars(runtime_env_inputs[0][0]) == {**vars(args), "update_weight_start_version": 0}
+        assert runtime_env_inputs[0][1]["USER_ENV"] == "yes"
+        assert actor_env["PLATFORM_ENV"] == "1"
+        current_env.assert_called_once_with()
+    else:
+        assert "PLATFORM_ENV" not in actor_env
+        current_env.assert_not_called()
     assert remote_declarations[0]["num_gpus"] == 1
     assert actor_allocations[0]["resources"] == {"ACCEL": 0.4}
     assert actor_allocations[0]["num_gpus"] == 0

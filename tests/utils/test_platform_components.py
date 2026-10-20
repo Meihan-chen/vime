@@ -159,13 +159,13 @@ def test_default_engine_actor_env_is_the_identity():
 
 
 @pytest.mark.unit
-def test_npu_train_actor_env_carries_the_region_settings(monkeypatch, tmp_path):
+def test_npu_train_offload_env_carries_the_region_settings(monkeypatch, tmp_path):
     toolkit = tmp_path / "toolkit"
     (toolkit / "python" / "site-packages" / "acl").mkdir(parents=True)
     monkeypatch.setenv("ASCEND_TOOLKIT_HOME", str(toolkit))
     args = Namespace(offload_train=True, train_backend="megatron", colocate=True)
 
-    env = _npu_device_env().train_actor_env(args, {"BASE": "1"})
+    env = _npu_device_env().train_offload_env(args, {"BASE": "1"})
 
     assert env["BASE"] == "1"
     assert env["TMS_HOOK_MODE"] == "torch"
@@ -175,18 +175,10 @@ def test_npu_train_actor_env_carries_the_region_settings(monkeypatch, tmp_path):
     assert str(toolkit / "python" / "site-packages") in env["PYTHONPATH"]
 
 
-@pytest.mark.parametrize("device_env", [DeviceEnv, _npu_device_env])
-@pytest.mark.unit
-def test_train_actor_env_is_untouched_without_offload(device_env):
-    args = Namespace(offload_train=False, train_backend="megatron", colocate=True)
-
-    assert device_env().train_actor_env(args, {"BASE": "1"}) == {"BASE": "1"}
-
-
 @pytest.mark.unit
 def test_npu_does_not_enable_megatron_offload_for_other_backends():
     args = Namespace(offload_train=True, train_backend="fsdp", colocate=True)
-    assert _npu_device_env().train_actor_env(args, {"BASE": "1"}) == {"BASE": "1"}
+    assert _npu_device_env().train_offload_env(args, {"BASE": "1"}) == {"BASE": "1"}
 
 
 @pytest.mark.parametrize("chained", [False, True])

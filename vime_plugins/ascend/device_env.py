@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from vime.utils.device_env import DeviceEnv, offload_requested
+from vime.utils.device_env import DeviceEnv
 
 
 _ASCEND_HOME_DEFAULT = "/usr/local/Ascend"
@@ -95,9 +95,9 @@ def _with_cann_and_allocator(env: dict[str, str], colocate: bool) -> dict[str, s
 
 
 class NpuDeviceEnv(DeviceEnv):
-    def train_actor_env(self, args: Any, env_vars: Mapping[str, str] | None = None) -> dict[str, str]:
-        env = dict(env_vars or {})
-        if not offload_requested(args) or getattr(args, "train_backend", None) != "megatron":
+    def train_offload_env(self, args: Any, env_vars: Mapping[str, str]) -> dict[str, str]:
+        env = dict(env_vars)
+        if getattr(args, "train_backend", None) != "megatron":
             return env
         env["TMS_HOOK_MODE"] = "torch"
         return _with_cann_and_allocator(env, getattr(args, "colocate", False))
