@@ -246,11 +246,6 @@ class NpuTrainingBootstrap(TrainingBootstrap):
         attention = importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
         attention.DotProductAttention.forward = attention.npu_dot_product_attention_forward
 
-    def adjust_tp_partition_dim(self, name: str, partition_dim: int) -> int:
-        if "linear_fc1.weight" in name or "linear_fc1.bias" in name:
-            return 0
-        return partition_dim
-
     def training_context(self, offload_train: bool):
         if not offload_train:
             return nullcontext()

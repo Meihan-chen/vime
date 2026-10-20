@@ -397,7 +397,9 @@ def test_single_tp_returns_parameter_without_collective(monkeypatch, weight_modu
 
 
 @pytest.mark.unit
-def test_all_gather_params_async_restores_layouts(monkeypatch, weight_modules):
+@pytest.mark.parametrize("async_op", [False, True])
+@pytest.mark.parametrize("expert", [False, True])
+def test_all_gather_params_restores_layouts(monkeypatch, weight_modules, async_op, expert):
     common, _ = weight_modules
     direct = torch.nn.Parameter(torch.tensor([99.0]))
     direct.tensor_model_parallel = False
@@ -408,7 +410,7 @@ def test_all_gather_params_async_restores_layouts(monkeypatch, weight_modules):
     entries = [
         (_param_info("dense", direct), direct),
         (_param_info("linear.weight", column), column),
-        (_param_info("linear_fc1.weight", glu), glu),
+        (_param_info("mlp.experts.linear_fc1.weight0" if expert else "linear_fc1.weight", glu), glu),
         (_param_info("linear_fc2.weight", row), row),
     ]
     remote_parts = iter(
@@ -420,7 +422,7 @@ def test_all_gather_params_async_restores_layouts(monkeypatch, weight_modules):
     )
     calls = []
 
-    def all_gather(partitions, local, group, async_op):
+    def all_gather(partitions, local, group, async_op=False):
         calls.append((group, async_op))
         partitions[0].copy_(local)
         partitions[1].copy_(next(remote_parts))
@@ -428,11 +430,17 @@ def test_all_gather_params_async_restores_layouts(monkeypatch, weight_modules):
 
     monkeypatch.setattr(common.mpu, "get_tensor_model_parallel_world_size", lambda: 2)
     monkeypatch.setattr(common.mpu, "get_tensor_model_parallel_group", lambda: "tp")
+    monkeypatch.setattr(common.mpu, "get_expert_tensor_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(common.mpu, "get_expert_tensor_parallel_group", lambda: "etp")
     monkeypatch.setattr(common.dist, "all_gather", all_gather)
 
-    gathered = common.all_gather_params_async(entries)
+    gathered = (
+        common.all_gather_params_async(entries)
+        if async_op
+        else [common.all_gather_param(info.name, param) for info, param in entries]
+    )
 
-    assert calls == [("tp", True)] * 3
+    assert calls == [("tp", async_op), ("etp" if expert else "tp", async_op), ("tp", async_op)]
     assert gathered[0].data_ptr() == direct.data_ptr()
     assert torch.equal(gathered[1], torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]))
     assert torch.equal(gathered[2], torch.tensor([[1.0], [2.0], [3.0], [4.0], [10.0], [20.0], [30.0], [40.0]]))

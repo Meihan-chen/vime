@@ -570,7 +570,7 @@ def test_qwen3_vl_tied_output_uses_language_embedding(top_tied, text_tied, has_h
 @pytest.mark.parametrize("platform", ["cuda", "npu"])
 @pytest.mark.parametrize("expert", [False, True])
 @pytest.mark.parametrize("parallel_size", [1, 2, 4])
-def test_native_fc1_loading_uses_platform_partition_metadata(monkeypatch, platform, expert, parallel_size):
+def test_native_fc1_loading_uses_parameter_partition_metadata(monkeypatch, platform, expert, parallel_size):
     mpu = pytest.importorskip("megatron.core").mpu
     monkeypatch.setenv("VIME_PLATFORM", platform)
     monkeypatch.setattr(mpu, "get_tensor_model_parallel_world_size", lambda: 8 if expert else parallel_size)
@@ -579,10 +579,7 @@ def test_native_fc1_loading_uses_platform_partition_metadata(monkeypatch, platfo
     monkeypatch.setattr(mpu, "get_expert_tensor_parallel_rank", lambda: parallel_size - 1 if expert else 0)
     name = "decoder.layers.0.mlp." + ("experts.linear_fc1.weight0" if expert else "linear_fc1.weight")
     weight = torch.arange(16 * 8).reshape(16, 8)
-    # MindSpeed grouped column-parallel weights carry dim=1, but store [out, in].
-    parameter = types.SimpleNamespace(
-        tensor_model_parallel=True, partition_dim=1 if platform == "npu" and expert else 0, partition_stride=1
-    )
+    parameter = types.SimpleNamespace(tensor_model_parallel=True, partition_dim=0, partition_stride=1)
     shard = shard_mcore_tensor(name, weight, parameter)
     gate, up = weight.chunk(2)
     assert torch.equal(shard, torch.cat((gate.chunk(parallel_size)[-1], up.chunk(parallel_size)[-1])))

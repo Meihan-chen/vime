@@ -9,7 +9,6 @@ import torch.distributed as dist
 from megatron.core import mpu
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
-from vime.platforms import current_platform
 from vime.utils.types import ParamInfo
 
 
@@ -50,7 +49,6 @@ def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:
     if "linear_fc1.weight" in name or "linear_fc1.bias" in name:
         param_partitions = [p.chunk(2, dim=0) for p in param_partitions]
         param_partitions = [p[0] for p in param_partitions] + [p[1] for p in param_partitions]
-        partition_dim = current_platform().megatron.adjust_tp_partition_dim(name, partition_dim)
     # this is bug in megatron's grouped moe.
     if "linear_fc2.weight" in name:
         if partition_dim == 0:
@@ -118,7 +116,6 @@ def all_gather_params_async(
             if "linear_fc1.weight" in info.name or "linear_fc1.bias" in info.name:
                 param_partitions = [p.chunk(2, dim=0) for p in param_partitions]
                 param_partitions = [p[0] for p in param_partitions] + [p[1] for p in param_partitions]
-                partition_dim = current_platform().megatron.adjust_tp_partition_dim(info.name, partition_dim)
             # this is bug in megatron's grouped moe.
             if "linear_fc2.weight" in info.name:
                 if partition_dim == 0:
