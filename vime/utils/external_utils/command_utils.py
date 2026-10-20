@@ -108,11 +108,11 @@ def execute_train(
         config = ExecuteTrainConfig()
 
     launch = launch_inputs(num_gpus_per_node)
-    extra_env_vars = {**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)}
-    launch.validate_overrides(extra_env_vars)
+    start_overrides = {**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)}
+    launch.validate_overrides(start_overrides)
     # User overrides for platform-required startup variables must reach the
     # raylet too. Other job-only overrides retain main's original scope.
-    start_env = {key: extra_env_vars.get(key, value) for key, value in launch.start_env.items()}
+    start_env = {key: start_overrides.get(key, value) for key, value in launch.start_env.items()}
 
     external_ray = get_bool_env_var("VIME_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
@@ -139,10 +139,15 @@ def execute_train(
     if (f := before_ray_job_submit) is not None:
         f()
 
+    # Like main, read job defaults and caller/config overrides after the callback.
+    from vime.utils.device_env import current as current_device_env
+
+    extra_env_vars = {**extra_env_vars, **_parse_extra_env_vars(config.extra_env_vars)}
+    launch.validate_overrides(extra_env_vars)
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                **launch.job_env,
+                **current_device_env().launch_job_env(),
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,

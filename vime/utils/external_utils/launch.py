@@ -13,11 +13,10 @@ class LaunchInputs:
     name: str
     ray_args: str
     start_env: dict[str, str]
-    job_env: dict[str, str]
 
     def validate_overrides(self, env: dict[str, str]) -> None:
         for key in ("VIME_ACCELERATOR", "VIME_PLUGINS"):
-            if key in self.job_env and key in env and env[key] != self.job_env[key]:
+            if key in self.start_env and key in env and env[key] != self.start_env[key]:
                 raise ValueError(f"Child {key} must match the selected accelerator support")
 
 
@@ -38,4 +37,4 @@ def launch_inputs(num_devices: int) -> LaunchInputs:
         flags = f"--num-gpus {num_devices}"
     else:
         flags = "--num-gpus 0 --resources " + shlex.quote(json.dumps({device.ray_resource_name: num_devices}))
-    return LaunchInputs(device.name, flags, env.launch_env(), env.launch_job_env())
+    return LaunchInputs(device.name, flags, env.launch_env())

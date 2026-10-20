@@ -67,6 +67,25 @@ def test_shared_start_callback_and_submit(launch_case, monkeypatch, backend, res
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("configured", [False, True])
+def test_callback_environment_changes_reach_submission(launch_case, monkeypatch, configured):
+    monkeypatch.setenv("NCCL_NVLS_ENABLE", "0")
+    overrides = {"LABEL": "before"}
+    config = commands.ExecuteTrainConfig()
+
+    def callback():
+        monkeypatch.setenv("NCCL_NVLS_ENABLE", "1")
+        overrides["LABEL"] = "after"
+        if configured:
+            config.extra_env_vars = '{"LABEL": "configured-after"}'
+
+    commands.execute_train("", 1, None, callback, overrides, config)
+    env = submitted_env(launch_case)
+    assert env["NCCL_NVLS_ENABLE"] == "1"
+    assert env["LABEL"] == ("configured-after" if configured else "after")
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("external,running", [(False, True), (True, False)])
 def test_reuse_preserves_detached_engines(launch_case, monkeypatch, external, running):
     monkeypatch.setenv("VIME_ACCELERATOR", "npu")
