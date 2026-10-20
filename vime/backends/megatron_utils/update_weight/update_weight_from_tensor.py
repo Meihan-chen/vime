@@ -137,7 +137,7 @@ class UpdateWeightFromTensor:
         self._ipc_gather_src = None
         self._ipc_engine = None
         self._expert_transfer_plan = []
-        self._native_trainers: list[tuple[Any, Sequence[ActorHandle] | None]] = []
+        self._native_trainers = []
 
     def connect_rollout_engines(
         self,
@@ -148,14 +148,6 @@ class UpdateWeightFromTensor:
         engine_parallel_configs: Sequence[Mapping[str, Any]] | None = None,
     ) -> None:
         del rollout_engine_lock
-        # Keep the receiving engines with the trainer that created their group.
-        # Reconnection must clean the old endpoints, regardless of backend name.
-        for trainer, connected_engines in self._native_trainers:
-            if connected_engines is not None:
-                disconnect_rollout_engines_from_distributed(trainer, connected_engines)
-            else:
-                trainer.shutdown()
-        self._native_trainers = []
         self._all_rollout_engines = list(rollout_engines)
         self.rollout_engines = []
         self._ipc_engine = None
@@ -180,6 +172,13 @@ class UpdateWeightFromTensor:
 
         self.rollout_engines = list(rollout_engines[:colocate_engine_nums])
         distributed_rollout_engines = list(rollout_engines[colocate_engine_nums:])
+        for trainer in self._native_trainers:
+            if trainer.init_info_cls.backend == current_weight_transfer().backend("distributed"):
+                # The old trainer's client still owns the previous receiving engines.
+                disconnect_rollout_engines_from_distributed(trainer, trainer.client.engines)
+            else:
+                trainer.shutdown()
+        self._native_trainers = []
         use_distribute = bool(distributed_rollout_engines)
         colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
         colocate_gpu_counts = engine_gpu_counts[:colocate_engine_nums]
@@ -215,7 +214,7 @@ class UpdateWeightFromTensor:
                     client=client,
                     source=self._source,
                 )
-                self._native_trainers.append((trainer, None))
+                self._native_trainers.append(trainer)
             if distributed_rollout_engines:
                 distributed_gpu_counts = engine_gpu_counts[colocate_engine_nums:]
                 client = VimeRayWeightSyncClient(
@@ -228,7 +227,7 @@ class UpdateWeightFromTensor:
                     self._source,
                     distributed_gpu_counts,
                 )
-                self._native_trainers.append((trainer, distributed_rollout_engines))
+                self._native_trainers.append(trainer)
 
             if not self._expert_transfer_plan:
                 return
@@ -386,7 +385,7 @@ class UpdateWeightFromTensor:
             megatron_local_weights = self.weights_getter()
             self._update_rollout_weights(megatron_local_weights, draft=False)
         else:
-            for trainer, _ in self._native_trainers:
+            for trainer in self._native_trainers:
                 trainer.client.draft = False
                 trainer.send_weights()
 
@@ -396,7 +395,7 @@ class UpdateWeightFromTensor:
         if update_draft:
             if self._native_trainers:
                 self._source.draft = self.args.dspark_enabled
-                for trainer, _ in self._native_trainers:
+                for trainer in self._native_trainers:
                     trainer.client.draft = True
                     trainer.send_weights()
                     trainer.client.draft = False
