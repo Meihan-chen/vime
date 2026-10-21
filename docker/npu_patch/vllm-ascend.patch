@@ -1,5 +1,438 @@
+diff --git a/csrc/camem_allocator.cpp b/csrc/camem_allocator.cpp
+index aaeb3b0..0a43bd9 100644
+--- a/csrc/camem_allocator.cpp
++++ b/csrc/camem_allocator.cpp
+@@ -1,347 +1,391 @@
+ /*
+  * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+  * http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+ 
+ #include <iostream>
+ #include <stdexcept>
++#include <mutex>
++#include <sstream>
+ #include <string>
+ 
+ extern "C" {
+ 
+ #define PY_SSIZE_T_CLEAN
+ #include <Python.h>
+ 
+ #include <sys/types.h>
+ #include "acl/acl.h"
+ 
+ // Global references to Python callables
+ // NOTE: this is borrowed reference, so we don't need to DECREF them.
+ // This brings the limitation that the allocator needs to be singleton.
+ static PyObject* g_python_malloc_callback = nullptr;
+ static PyObject* g_python_free_callback = nullptr;
+ 
++// The first field preserves the existing Python handle tuple ABI. Mapping
++// state belongs to the native handle because my_free() also releases memory
++// after Python sleep() has already unmapped it.
++struct MappingState {
++  aclrtDrvMemHandle handle{};
++  bool allocated = false;
++  bool mapped = false;
++};
++static std::mutex g_mapping_mutex;
++
++std::runtime_error mapping_error(const char* operation, aclError code,
++                                 unsigned long long device, ssize_t size,
++                                 void* address, const MappingState& state) {
++  std::ostringstream message;
++  message << operation << " failed: acl_error=" << code
++          << " device=" << device << " ptr=" << address << " size=" << size
++          << " mapped=" << state.mapped << " allocated=" << state.allocated;
++  return std::runtime_error(message.str());
++}
++
++
+ 
+ // ---------------------------------------------------------------------------
+ // Helper functions:
+ 
+ void ensure_context(unsigned long long device) {
+   aclrtContext pctx;
+   aclrtGetCurrentContext(&pctx);
+   if (!pctx) {
+     // Ensure device context.
+     aclrtCreateContext(&pctx, device);
+     aclrtSetCurrentContext(pctx);
+   }
+ }
+ 
+ void create_and_map(unsigned long long device, ssize_t size, void* d_mem,
+                     aclrtDrvMemHandle* p_memHandle) {
+   ensure_context(device);
+-  // Define memory allocation properties
++  std::lock_guard<std::mutex> guard(g_mapping_mutex);
++  auto& state = *reinterpret_cast<MappingState*>(p_memHandle);
++  if (state.mapped) {
++    return;
++  }
+   aclrtPhysicalMemProp prop = {};
+   prop.handleType = ACL_MEM_HANDLE_TYPE_NONE;
+   prop.allocationType = ACL_MEM_ALLOCATION_TYPE_PINNED;
+   prop.memAttr = ACL_HBM_MEM_HUGE;
+   prop.location.id = device;
+   prop.location.type = ACL_MEM_LOCATION_TYPE_DEVICE;
+   prop.reserve = 0;
+-
+-  // Allocate memory using aclrtMallocPhysical
+-  aclError error_code = aclrtMallocPhysical(p_memHandle, size, &prop, 0);
+-  if (error_code != 0) {
+-    if (error_code == ACL_ERROR_RT_MEMORY_ALLOCATION) {
+-      throw std::runtime_error("aclrtMallocPhysical failed with acl error code: " + 
+-                              std::to_string(error_code) + "(OOM: Out of Memory, allocation failed) " + 
+-                              __FILE__ + ":" + std::to_string(__LINE__));
+-    } else {
+-      throw std::runtime_error("aclrtMallocPhysical failed with acl error code: " +
+-                              std::to_string(error_code) + " " + __FILE__ + ":" + std::to_string(__LINE__));
++  if (!state.allocated) {
++    aclError code = aclrtMallocPhysical(p_memHandle, size, &prop, 0);
++    if (code != 0) {
++      throw mapping_error("aclrtMallocPhysical", code, device, size, d_mem, state);
+     }
++    state.allocated = true;
+   }
+-
+-  // Map memory
+-  error_code = aclrtMapMem(d_mem, size, 0, *p_memHandle, 0);
+-  if (error_code != 0) {
+-    throw std::runtime_error("aclrtMapMem failed with acl error code: " +
+-                            std::to_string(error_code) + " " + __FILE__ + ":" + std::to_string(__LINE__));
++  aclError code = aclrtMapMem(d_mem, size, 0, *p_memHandle, 0);
++  if (code != 0) {
++    throw mapping_error("aclrtMapMem", code, device, size, d_mem, state);
+   }
++  state.mapped = true;
+ }
+ 
+ void unmap_and_release(unsigned long long device, ssize_t size,
+-                       void* d_mem,
+-                       aclrtDrvMemHandle* p_memHandle) {
+-  // std::cout << "unmap_and_release: device=" << device << ", size=" << size <<
+-  // ", d_mem=" << d_mem << ", p_memHandle=" << p_memHandle << std::endl;
++                       void* d_mem, aclrtDrvMemHandle* p_memHandle) {
+   ensure_context(device);
+-  aclError error_code = aclrtUnmapMem(d_mem);
+-  if (error_code != 0) {
+-    throw std::runtime_error("aclrtUnmapMem failed with acl error code: " +
+-                            std::to_string(error_code) + " " + __FILE__ + ":" + std::to_string(__LINE__));
++  std::lock_guard<std::mutex> guard(g_mapping_mutex);
++  auto& state = *reinterpret_cast<MappingState*>(p_memHandle);
++  if (state.mapped) {
++    aclError code = aclrtUnmapMem(d_mem);
++    if (code != 0) {
++      throw mapping_error("aclrtUnmapMem", code, device, size, d_mem, state);
++    }
++    state.mapped = false;
+   }
+-  error_code = aclrtFreePhysical(*p_memHandle);
+-  if (error_code != 0) {
+-    throw std::runtime_error("aclrtFreePhysical failed with acl error code: " +
+-                            std::to_string(error_code) + " " + __FILE__ + ":" + std::to_string(__LINE__));
++  if (state.allocated) {
++    aclError code = aclrtFreePhysical(*p_memHandle);
++    if (code != 0) {
++      throw mapping_error("aclrtFreePhysical", code, device, size, d_mem, state);
++    }
++    state.allocated = false;
+   }
+ }
+ 
+ PyObject* create_tuple_from_c_integers(unsigned long long a,
+                                        unsigned long long b,
+                                        unsigned long long c,
+                                        unsigned long long d) {
+   // Create a new tuple of size 4
+   PyObject* tuple = PyTuple_New(4);
+   if (!tuple) {
+     return NULL;  // Return NULL on failure
+   }
+ 
+   // Convert integers to Python objects and set them in the tuple
+   PyTuple_SetItem(
+       tuple, 0,
+       PyLong_FromUnsignedLongLong(a));  // Steals reference to the PyLong
+   PyTuple_SetItem(tuple, 1, PyLong_FromUnsignedLongLong(b));
+   PyTuple_SetItem(tuple, 2, PyLong_FromUnsignedLongLong(c));
+   PyTuple_SetItem(tuple, 3, PyLong_FromUnsignedLongLong(d));
+ 
+   // Note: PyTuple_SetItem "steals" a reference to each object,
+   // so we do not need to Py_DECREF the PyLong objects explicitly.
+ 
+   return tuple;  // Return the created tuple
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // Our exported C functions that call Python:
+ 
+ __attribute__ ((visibility("default"))) void* my_malloc(ssize_t size, int device, aclrtStream stream) {
+   ensure_context(device);
+ 
+   // first allocation, align the size, and reserve an address, and also allocate
+   // a aclrtDrvMemHandle
+ 
+   // Define memory allocation properties
+   aclrtPhysicalMemProp prop = {};
+   prop.handleType = ACL_MEM_HANDLE_TYPE_NONE ;
+   prop.allocationType = ACL_MEM_ALLOCATION_TYPE_PINNED;
+   prop.memAttr = ACL_HBM_MEM_HUGE;
+   prop.location.id = device;
+   prop.location.type = ACL_MEM_LOCATION_TYPE_DEVICE;
+   prop.reserve = 0;
+ 
+   // Check if the allocation is supported
+   size_t granularity;
+   aclError error_code = aclrtMemGetAllocationGranularity(&prop,
+                                    ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM,
+                                    &granularity);
+   if (error_code != 0) {
+     throw std::runtime_error("aclrtMemGetAllocationGranularity failed with acl error code: " +
+                             std::to_string(error_code) + " " + __FILE__ + ":" + std::to_string(__LINE__));
+   }
+   size_t alignedSize = ((size + granularity - 1) / granularity) * granularity;
+   void *d_mem;
+   error_code = aclrtReserveMemAddress(&d_mem, alignedSize, 0, nullptr, 0);
+   if (error_code != 0) {
+     if (error_code == ACL_ERROR_RT_MEMORY_ALLOCATION) {
+       throw std::runtime_error("aclrtReserveMemAddress failed with acl error code: " + 
+                               std::to_string(error_code) + "(OOM: Out of Memory, allocation failed) " + 
+                               __FILE__ + ":" + std::to_string(__LINE__));
+     } else {
+       throw std::runtime_error("aclrtReserveMemAddress failed with acl error code: " +
+                               std::to_string(error_code) + " " + __FILE__ + ":" + std::to_string(__LINE__));
+     }
+   }
+   // allocate the aclrtDrvMemHandle
+-  aclrtDrvMemHandle* p_memHandle =
+-      (aclrtDrvMemHandle*)malloc(sizeof(aclrtDrvMemHandle));
++  auto* mapping = new MappingState{};
++  aclrtDrvMemHandle* p_memHandle = &mapping->handle;
+ 
+   if (!g_python_malloc_callback) {
+     throw std::runtime_error("my_malloc ERROR: g_python_malloc_callback not set." +
+                             std::string(" ") + __FILE__ + ":" + std::to_string(__LINE__));
+   }
+ 
+   // Acquire GIL (not in stable ABI officially, but often works)
+   PyGILState_STATE gstate = PyGILState_Ensure();
+ 
+   PyObject* arg_tuple = create_tuple_from_c_integers(
+       (unsigned long long)device, (unsigned long long)alignedSize,
+       (unsigned long long)d_mem, (unsigned long long)p_memHandle);
+ 
+   // Call g_python_malloc_callback
+   PyObject* py_result =
+       PyObject_CallFunctionObjArgs(g_python_malloc_callback, arg_tuple, NULL);
+   Py_DECREF(arg_tuple);
+ 
+   if (!py_result) {
+     PyErr_Print();
+     PyGILState_Release(gstate);
+     return nullptr;
+   }
+ 
+   PyGILState_Release(gstate);
+ 
+   // do the final mapping
+   create_and_map(device, alignedSize, d_mem, p_memHandle);
+ 
+   return (void*)d_mem;
+ }
+ 
+ __attribute__ ((visibility("default"))) void my_free(void* ptr, ssize_t size, int device, aclrtStream stream) {
+   // get memory handle from the pointer
+   if (!g_python_free_callback) {
+     throw std::runtime_error("aclrtDrvMemHandle ERROR: g_python_malloc_callback not set." +
+                             std::string(" ") + __FILE__ + ":" + std::to_string(__LINE__));
+   }
+ 
+   // Acquire GIL (not in stable ABI officially, but often works)
+   PyGILState_STATE gstate = PyGILState_Ensure();
+ 
+   PyObject* py_ptr =
+       PyLong_FromUnsignedLongLong(reinterpret_cast<unsigned long long>(ptr));
+ 
+   PyObject* py_result =
+       PyObject_CallFunctionObjArgs(g_python_free_callback, py_ptr, NULL);
+ 
+   if (!py_result || !PyTuple_Check(py_result) || PyTuple_Size(py_result) != 4) {
+     PyErr_SetString(PyExc_TypeError, "Expected a tuple of size 4");
+     return;
+   }
+ 
+   unsigned long long recv_device, recv_size;
+   unsigned long long recv_d_mem, recv_p_memHandle;
+   // Unpack the tuple into four C integers
+   if (!PyArg_ParseTuple(py_result, "KKKK", &recv_device, &recv_size,
+                         &recv_d_mem, &recv_p_memHandle)) {
+     // PyArg_ParseTuple sets an error if it fails
+     return;
+   }
+ 
+   PyGILState_Release(gstate);
+ 
+   // recv_size == size
+   // recv_device == device
+ 
+   // Free memory
+ 
+   void *d_mem = (void*)recv_d_mem;
+     // allocate the aclrtDrvMemHandle
+   aclrtDrvMemHandle* p_memHandle =
+       (aclrtDrvMemHandle*)recv_p_memHandle;
+   unmap_and_release(device, size, d_mem, p_memHandle);
+ 
+   // free address and the handle
+   aclError error_code = aclrtReleaseMemAddress(d_mem);
+   if (error_code != 0) {
+     throw std::runtime_error("aclrtReleaseMemAddress failed with acl error code: " +
+                             std::to_string(error_code) + " " + __FILE__ + ":" + std::to_string(__LINE__));
+   }
+-  free(p_memHandle);
++  delete reinterpret_cast<MappingState*>(p_memHandle);
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // Python extension boilerplate:
+ 
+ // Python-exposed function: init_module(python_malloc, python_free)
+ static PyObject* py_init_module(PyObject* self, PyObject* args) {
+   PyObject* malloc_callback = nullptr;
+   PyObject* free_callback = nullptr;
+ 
+   if (!PyArg_ParseTuple(args, "OO", &malloc_callback, &free_callback)) {
+     return nullptr;
+   }
+ 
+   if (!PyCallable_Check(malloc_callback) || !PyCallable_Check(free_callback)) {
+     PyErr_SetString(PyExc_TypeError, "Both arguments must be callables");
+     return nullptr;
+   }
+ 
+   // Save the Python callables
+   // This module does not handle GC of these objects, so they must be kept alive
+   // outside of this module.
+   g_python_malloc_callback = malloc_callback;
+   g_python_free_callback = free_callback;
+ 
+   Py_RETURN_NONE;
+ }
+ 
+ static PyObject* python_unmap_and_release(PyObject* self, PyObject* args) {
+   if (!args || !PyTuple_Check(args) || PyTuple_Size(args) != 4) {
+     PyErr_SetString(PyExc_TypeError, "Expected a tuple of size 4");
+     return nullptr;
+   }
+ 
+   unsigned long long recv_device, recv_size;
+   unsigned long long recv_d_mem, recv_p_memHandle;
+   // Unpack the tuple into four C integers
+   if (!PyArg_ParseTuple(args, "KKKK", &recv_device, &recv_size, &recv_d_mem,
+                         &recv_p_memHandle)) {
+     // PyArg_ParseTuple sets an error if it fails
+     return nullptr;
+   }
+ 
+   void *d_mem_ptr = (void*)recv_d_mem;
+   aclrtDrvMemHandle* p_memHandle =
+       (aclrtDrvMemHandle*)recv_p_memHandle;
+ 
+-  unmap_and_release(recv_device, recv_size, d_mem_ptr, p_memHandle);
++  try {
++    unmap_and_release(recv_device, recv_size, d_mem_ptr, p_memHandle);
++  } catch (const std::exception& error) {
++    PyErr_SetString(PyExc_RuntimeError, error.what());
++    return nullptr;
++  }
+ 
+   Py_RETURN_NONE;
+ }
+ 
+ static PyObject* python_create_and_map(PyObject* self, PyObject* args) {
+   if (!args || !PyTuple_Check(args) || PyTuple_Size(args) != 4) {
+     PyErr_SetString(PyExc_TypeError, "Expected a tuple of size 4");
+     return nullptr;
+   }
+ 
+   unsigned long long recv_device, recv_size;
+   unsigned long long recv_d_mem, recv_p_memHandle;
+   // Unpack the tuple into four C integers
+   if (!PyArg_ParseTuple(args, "KKKK", &recv_device, &recv_size, &recv_d_mem,
+                         &recv_p_memHandle)) {
+     // PyArg_ParseTuple sets an error if it fails
+     return nullptr;
+   }
+ 
+   void *d_mem_ptr = (void*)recv_d_mem;
+   aclrtDrvMemHandle* p_memHandle =
+       (aclrtDrvMemHandle*)recv_p_memHandle;
+ 
+-  create_and_map(recv_device, recv_size, d_mem_ptr, p_memHandle);
++  try {
++    create_and_map(recv_device, recv_size, d_mem_ptr, p_memHandle);
++  } catch (const std::exception& error) {
++    PyErr_SetString(PyExc_RuntimeError, error.what());
++    return nullptr;
++  }
+ 
+   Py_RETURN_NONE;
+ }
+ 
+ static PyMethodDef module_methods[] = {
+     {"init_module", (PyCFunction)py_init_module, METH_VARARGS,
+      "Initialize module with python_malloc and python_free callables."},
+     {"python_create_and_map", (PyCFunction)python_create_and_map, METH_VARARGS,
+      "Create and map memory on the device."},
+     {"python_unmap_and_release", (PyCFunction)python_unmap_and_release,
+      METH_VARARGS, "Unmap and release memory on the device."},
+     {NULL, NULL, 0, NULL}  // sentinel
+ };
+ 
++#ifdef VIME_CAMEM_STANDALONE
++#define CAMEM_MODULE_NAME "vime_camem_allocator"
++#define CAMEM_MODULE_INIT PyInit_vime_camem_allocator
++#else
++#define CAMEM_MODULE_NAME "camem_allocator"
++#define CAMEM_MODULE_INIT PyInit_vllm_ascend_C
++#endif
++
+ static struct PyModuleDef camem_allocator_module = {
+-    PyModuleDef_HEAD_INIT, "camem_allocator",
++    PyModuleDef_HEAD_INIT, CAMEM_MODULE_NAME,
+     "CANN-mem-based allocator for NPUPluggableAllocator", -1, module_methods};
+ 
+-PyMODINIT_FUNC PyInit_vllm_ascend_C(void) {
++PyMODINIT_FUNC CAMEM_MODULE_INIT(void) {
+   // Initialize the module
+   PyObject* module = PyModule_Create(&camem_allocator_module);
+   if (!module) {
+     return NULL;
+   }
++  if (PyModule_AddIntConstant(module, "MAPPING_STATE_VERSION", 1) < 0) {
++    Py_DECREF(module);
++    return nullptr;
++  }
+   return module;
+ }
+ }  // extern "C"
 diff --git a/vllm_ascend/core/recompute_scheduler.py b/vllm_ascend/core/recompute_scheduler.py
-index b666df588..d68e19bee 100644
+index b666df5..d68e19b 100644
 --- a/vllm_ascend/core/recompute_scheduler.py
 +++ b/vllm_ascend/core/recompute_scheduler.py
 @@ -1014,10 +1014,12 @@ class RecomputeScheduler(Scheduler):
@@ -24,7 +457,7 @@ index b666df588..d68e19bee 100644
              )
          for client_index, recomputed_outputs in recomputed_by_client.items():
 diff --git a/vllm_ascend/device/device_op.py b/vllm_ascend/device/device_op.py
-index ae0cd9a3a..6903fa91b 100644
+index ae0cd9a..6903fa9 100644
 --- a/vllm_ascend/device/device_op.py
 +++ b/vllm_ascend/device/device_op.py
 @@ -151,6 +151,8 @@ class BaseDeviceAdaptor:
@@ -44,9 +477,9 @@ index ae0cd9a3a..6903fa91b 100644
 +            slot_mapping=slot_mapping.to(dtype=torch.int32).contiguous(),
              cache_mode="Norm",
          )
- 
+
 diff --git a/vllm_ascend/distributed/weight_transfer/__init__.py b/vllm_ascend/distributed/weight_transfer/__init__.py
-index d6434f05f..fd7223836 100644
+index d6434f0..fd72238 100644
 --- a/vllm_ascend/distributed/weight_transfer/__init__.py
 +++ b/vllm_ascend/distributed/weight_transfer/__init__.py
 @@ -33,6 +33,11 @@ def register_engine():
@@ -62,21 +495,21 @@ index d6434f05f..fd7223836 100644
          "npu_ipc",
          "vllm_ascend.distributed.weight_transfer.npu_ipc_engine",
 diff --git a/vllm_ascend/distributed/weight_transfer/hccl_engine.py b/vllm_ascend/distributed/weight_transfer/hccl_engine.py
-index 827dca0b1..8462db56d 100644
+index 827dca0..8462db5 100644
 --- a/vllm_ascend/distributed/weight_transfer/hccl_engine.py
 +++ b/vllm_ascend/distributed/weight_transfer/hccl_engine.py
 @@ -3,8 +3,9 @@
  """HCCL-based weight transfer engine."""
- 
+
  from collections.abc import Callable, Iterator
 -from dataclasses import dataclass
 -from typing import TYPE_CHECKING, Any
 +from concurrent.futures import ThreadPoolExecutor
 +from dataclasses import asdict, dataclass
 +from typing import TYPE_CHECKING, Any, ClassVar
- 
+
  import torch
- 
+
 @@ -14,6 +15,11 @@ if TYPE_CHECKING:
  from vllm.config import VllmConfig
  from vllm.config.weight_transfer import WeightTransferConfig
@@ -91,8 +524,8 @@ index 827dca0b1..8462db56d 100644
      WeightTransferUpdateInfo,
 @@ -26,6 +32,19 @@ from vllm_ascend.distributed.weight_transfer.packed_tensor import (
  )
- 
- 
+
+
 +@dataclass
 +class HCCLTrainerInitInfo(TrainerInitInfo):
 +    """Stateful trainer configuration; rank 0 owns the HCCL endpoint."""
@@ -230,7 +663,7 @@ index 827dca0b1..8462db56d 100644
 +            self.model_update_group.close()
 +            self.model_update_group = None
 diff --git a/vllm_ascend/distributed/weight_transfer/npu_ipc_engine.py b/vllm_ascend/distributed/weight_transfer/npu_ipc_engine.py
-index f5e47804f..466d85741 100644
+index f5e4780..466d857 100644
 --- a/vllm_ascend/distributed/weight_transfer/npu_ipc_engine.py
 +++ b/vllm_ascend/distributed/weight_transfer/npu_ipc_engine.py
 @@ -176,6 +176,10 @@ class NPUIPCWeightTransferEngine(  # type: ignore[no-redef]
@@ -250,20 +683,20 @@ index f5e47804f..466d85741 100644
          del weight_refs
 +        torch.npu.ipc_collect()
 +        torch.npu.empty_cache()
- 
+
      def _send(self, source: "WeightSource") -> list[torch.Tensor] | None:
          if self.packed:
 diff --git a/vllm_ascend/distributed/weight_transfer/packed_tensor.py b/vllm_ascend/distributed/weight_transfer/packed_tensor.py
-index a35d9af8d..d55c988c3 100644
+index a35d9af..d55c988 100644
 --- a/vllm_ascend/distributed/weight_transfer/packed_tensor.py
 +++ b/vllm_ascend/distributed/weight_transfer/packed_tensor.py
 @@ -39,6 +39,7 @@ def packed_broadcast_producer(
      target_packed_tensor_size = buffer_size_bytes
- 
+
      streams = [torch.npu.Stream() for _ in range(num_buffers)]
 +    source_stream = torch.npu.current_stream()
      buffer_idx = 0
- 
+
      packing_tensor_list: list[list[torch.Tensor]] = [[] for _ in range(num_buffers)]
 @@ -50,6 +51,8 @@ def packed_broadcast_producer(
          # Synchronize the current stream (waits for previous
@@ -277,7 +710,7 @@ index a35d9af8d..d55c988c3 100644
 @@ -206,10 +209,10 @@ def packed_npu_ipc_producer(
  ) -> Iterator[dict[str, Any]]:
      """Pack tensors into a reusable NPU IPC buffer and yield chunks.
- 
+
 -    Allocates a single NPU buffer of ``buffer_size_bytes`` and registers
 -    it for IPC once via ``reduce_tensor``.  Each chunk's packed data is
 -    copied into this buffer before yielding, so only one IPC-shared
@@ -286,7 +719,7 @@ index a35d9af8d..d55c988c3 100644
 +    publishes a fresh IPC reference via ``reduce_tensor`` so its consumer
 +    releases that reference exactly once. The underlying buffer is reused
 +    for the lifetime of the transfer.
- 
+
      Args:
          iterator: Iterator of (name, tensor) pairs.
 @@ -218,9 +221,6 @@ def packed_npu_ipc_producer(
@@ -296,11 +729,11 @@ index a35d9af8d..d55c988c3 100644
 -    # Store only the rebuild args (drop the func); the consumer rebuilds with
 -    # the well-known ``rebuild_npu_tensor``, mirroring upstream's CUDA IPC engine.
 -    _, ipc_args = reduce_tensor(ipc_buffer)
- 
+
      names: list[str] = []
      shapes: list[list[int]] = []
 @@ -240,6 +240,7 @@ def packed_npu_ipc_producer(
- 
+
          if total_bytes and total_bytes + flat.numel() > buffer_size_bytes:
              torch.npu.current_stream().synchronize()
 +            _, ipc_args = reduce_tensor(ipc_buffer)
@@ -308,7 +741,7 @@ index a35d9af8d..d55c988c3 100644
                  "names": names,
                  "shapes": shapes,
 @@ -259,6 +260,7 @@ def packed_npu_ipc_producer(
- 
+
      if total_bytes:
          torch.npu.current_stream().synchronize()
 +        _, ipc_args = reduce_tensor(ipc_buffer)
@@ -316,13 +749,13 @@ index a35d9af8d..d55c988c3 100644
              "names": names,
              "shapes": shapes,
 diff --git a/vllm_ascend/ops/causal_conv1d.py b/vllm_ascend/ops/causal_conv1d.py
-index bcfd117ec..ef8b151de 100644
+index bcfd117..ef8b151 100644
 --- a/vllm_ascend/ops/causal_conv1d.py
 +++ b/vllm_ascend/ops/causal_conv1d.py
 @@ -35,11 +35,14 @@ def causal_conv1d_ref(
      seqlen = x.shape[-1]
      dim, width = weight.shape
- 
+
 +    # F.conv1d performs cross-correlation; flip the kernel to get true
 +    # causal convolution matching fla.ShortConvolution semantics.
 +    flipped_weight = weight.flip(-1).unsqueeze(1)
@@ -334,10 +767,10 @@ index bcfd117ec..ef8b151de 100644
 -        out = F.conv1d(x, weight.unsqueeze(1), bias, padding=0, groups=dim)
 +        out = F.conv1d(x, flipped_weight, bias, padding=0, groups=dim)
      out = out[..., :seqlen]
- 
+
      if return_final_states:
 diff --git a/vllm_ascend/ops/gdn.py b/vllm_ascend/ops/gdn.py
-index 94eded278..4ca5d0ef9 100644
+index 94eded2..4ca5d0e 100644
 --- a/vllm_ascend/ops/gdn.py
 +++ b/vllm_ascend/ops/gdn.py
 @@ -114,6 +114,9 @@ def initialize_packed_conv_weight(layer: nn.Module) -> None:
@@ -351,7 +784,7 @@ index 94eded278..4ca5d0ef9 100644
      if quant_method is None:
          return
 diff --git a/vllm_ascend/ops/triton/v2/sample/sampling_mask.py b/vllm_ascend/ops/triton/v2/sample/sampling_mask.py
-index 75924c74f..122c41356 100644
+index 75924c7..122c413 100644
 --- a/vllm_ascend/ops/triton/v2/sample/sampling_mask.py
 +++ b/vllm_ascend/ops/triton/v2/sample/sampling_mask.py
 @@ -64,6 +64,7 @@ def sampling_mask_from_logits_npu(
@@ -389,7 +822,7 @@ index 75924c74f..122c41356 100644
 +            vocab_size,
 +            BLOCK_SIZE=_BLOCK_SIZE,
 +        )
- 
+
      if max_num_kept is not None:
          # The four-field API normally returns compact token IDs in addition to
 @@ -106,6 +108,11 @@ def sampling_mask_from_logits_npu(
@@ -402,15 +835,15 @@ index 75924c74f..122c41356 100644
 +            logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float32)
 +            return cls(token_ids, packed_mask, counts, vocab_size, logprobs)
          return cls(token_ids, packed_mask, counts, vocab_size)
- 
+
      return cls(packed_mask, counts, vocab_size)
 diff --git a/vllm_ascend/patch/platform/patch_pp_mtp.py b/vllm_ascend/patch/platform/patch_pp_mtp.py
-index 6a3d98226..7ed6cecd9 100644
+index 6a3d982..7ed6cec 100644
 --- a/vllm_ascend/patch/platform/patch_pp_mtp.py
 +++ b/vllm_ascend/patch/platform/patch_pp_mtp.py
 @@ -243,7 +243,7 @@ def _patch_scheduler_update_from_output() -> None:
      original_update_from_output = Scheduler.update_from_output
- 
+
      @wraps(original_update_from_output)
 -    def _patched_update_from_output(self, scheduler_output, model_runner_output):
 +    def _patched_update_from_output(self, scheduler_output, model_runner_output, weight_version=None):
@@ -423,24 +856,24 @@ index 6a3d98226..7ed6cecd9 100644
              model_runner_output,
 +            weight_version,
          )
- 
+
          if use_pp_ipc_runtime_patch:
 diff --git a/vllm_ascend/patch/platform/patch_profiling_chunk.py b/vllm_ascend/patch/platform/patch_profiling_chunk.py
-index 659dd70c8..af1c9df7d 100644
+index 659dd70..af1c9df 100644
 --- a/vllm_ascend/patch/platform/patch_profiling_chunk.py
 +++ b/vllm_ascend/patch/platform/patch_profiling_chunk.py
 @@ -143,9 +143,9 @@ def _ensure_update_from_output_wrapped(scheduler):
      cls = type(scheduler)
      _original_update_from_output = cls.update_from_output
- 
+
 -    def _wrapped_update_from_output(self, scheduler_output, model_output):
 +    def _wrapped_update_from_output(self, scheduler_output, model_output, weight_version=None):
          _record_execution_timing(self, scheduler_output, model_output)
 -        return _original_update_from_output(self, scheduler_output, model_output)
 +        return _original_update_from_output(self, scheduler_output, model_output, weight_version)
- 
+
      cls.update_from_output = _wrapped_update_from_output
- 
+
 diff --git a/vllm_ascend/worker/worker.py b/vllm_ascend/worker/worker.py
 index 220736b..69e5bdd 100644
 --- a/vllm_ascend/worker/worker.py
@@ -452,7 +885,7 @@ index 220736b..69e5bdd 100644
 +from fnmatch import filter as fnmatch_filter
  from types import NoneType
  from typing import Any
- 
+
 @@ -176,6 +177,8 @@ class NPUWorker(WorkerBase):
          if vllm_config.model_config and vllm_config.model_config.enable_sleep_mode:
              # Buffers saved before sleep
@@ -460,12 +893,12 @@ index 220736b..69e5bdd 100644
 +            self._sleep_saved_parameters: dict[str, torch.Tensor] = {}
 +            self._sleep_saved_draft_buffers: dict[str, torch.Tensor] = {}
          self.sleep_wakeup_manager = SleepWakeupManager(vllm_config, self, lambda: getattr(self, "model_runner", None))
- 
+
          # Weight transfer engine is created in `load_model` once the model
 @@ -243,6 +246,53 @@ class NPUWorker(WorkerBase):
                  except Exception:
                      return
- 
+
 +    def _get_sleep_parameters(self, model: nn.Module) -> dict[str, nn.Parameter]:
 +        parameters = dict(model.named_parameters())
 +        draft = self.get_draft_model()
@@ -526,7 +959,7 @@ index 220736b..69e5bdd 100644
 +            self._sleep_saved_draft_buffers = (
 +                {name: buffer.cpu().clone() for name, buffer in draft.named_buffers()} if draft is not None else {}
 +            )
- 
+
 +        self._prepare_kv_transfer_sleep()
          rl_config = get_ascend_config().rl_config
          cleanup_enabled = rl_config.enabled and rl_config.sleep_mode_extra_cleanup
@@ -534,7 +967,7 @@ index 220736b..69e5bdd 100644
 @@ -285,19 +341,31 @@ class NPUWorker(WorkerBase):
          allocator = CaMemAllocator.get_instance()
          allocator.wake_up(tags=tags)
- 
+
 -        # Restore the buffers after level 2 sleep
 -        if len(self._sleep_saved_buffers):
 +        wake_weights = tags is None or "weights" in tags
@@ -554,7 +987,7 @@ index 220736b..69e5bdd 100644
 +                    if name in self._sleep_saved_draft_buffers:
 +                        buffer.data.copy_(self._sleep_saved_draft_buffers[name].data)
 +            self._sleep_saved_draft_buffers = {}
- 
+
          rl_config = get_ascend_config().rl_config
          cleanup_enabled = rl_config.enabled and rl_config.sleep_mode_extra_cleanup
          if cleanup_enabled:
@@ -568,7 +1001,7 @@ index 220736b..69e5bdd 100644
 @@ -311,6 +379,13 @@ class NPUWorker(WorkerBase):
          typed_init_info = self.weight_transfer_engine.parse_init_info(init_info)
          self.weight_transfer_engine.init_transfer_engine(typed_init_info)
- 
+
 +    def shutdown_weight_transfer_engine(self) -> None:
 +        """Release a trainer connection without shutting down inference."""
 +        if self._weight_update_active:
@@ -580,7 +1013,7 @@ index 220736b..69e5bdd 100644
          if get_ascend_config().weight_nz_mode:
              raise ValueError(
 @@ -322,7 +397,48 @@ class NPUWorker(WorkerBase):
- 
+
      def start_weight_update(self) -> None:
          """Begin a new weight update; prepares the model for layerwise reload."""
 +        with set_current_vllm_config(self.vllm_config):
@@ -625,13 +1058,13 @@ index 220736b..69e5bdd 100644
 +            raise RuntimeError(
 +                f"{type(self.weight_transfer_engine).__name__} does not support draft model weight updates."
 +            )
- 
+
          if self._weight_update_active:
              raise RuntimeError(
 @@ -331,11 +447,16 @@ class NPUWorker(WorkerBase):
- 
+
          self._check_nz_disabled()
- 
+
 -        assert self.weight_transfer_engine is not None
 -        self.weight_transfer_engine.start_weight_update()
 +        try:
@@ -642,7 +1075,7 @@ index 220736b..69e5bdd 100644
 +            self.weight_transfer_engine.reset_weight_update_target()
 +            raise
          self._weight_update_active = True
- 
+
 -    def update_weights(self, update_info: dict) -> None:
 +    def update_weights(self, update_info: dict | list[dict]) -> None:
          """Receive a chunk of weights from the trainer and load them in place."""
@@ -651,7 +1084,7 @@ index 220736b..69e5bdd 100644
 @@ -344,11 +465,19 @@ class NPUWorker(WorkerBase):
          if not self._weight_update_active:
              raise RuntimeError("start_weight_update must be called before update_weights.")
- 
+
 -        try:
 -            self.weight_transfer_engine.update_weights(update_info)
 -        except BaseException:
@@ -670,12 +1103,12 @@ index 220736b..69e5bdd 100644
 +                self._weight_update_active = False
 +                self.weight_transfer_engine.reset_weight_update_target()
 +                raise
- 
+
      def finish_weight_update(self) -> None:
          """Finish the current weight update; runs layerwise postprocessing."""
 @@ -358,9 +487,13 @@ class NPUWorker(WorkerBase):
              raise RuntimeError("start_weight_update must be called before finish_weight_update.")
- 
+
          assert self.weight_transfer_engine is not None
 -        self.weight_transfer_engine.finish_weight_update()
 -        self.model_runner.reset_lora_state()
@@ -687,7 +1120,7 @@ index 220736b..69e5bdd 100644
 +            finally:
 +                self._weight_update_active = False
 +                self.weight_transfer_engine.reset_weight_update_target()
- 
+
      def shutdown(self) -> None:
          if ensure_kv_transfer_shutdown is not None:
 @@ -453,7 +586,9 @@ class NPUWorker(WorkerBase):
@@ -703,7 +1136,7 @@ index 220736b..69e5bdd 100644
                  f"Free memory on device "
 @@ -612,7 +747,9 @@ class NPUWorker(WorkerBase):
          self.non_torch_memory = profile_result.non_torch_increase
- 
+
          free_gpu_memory = profile_result.after_profile.free_memory
 -        assert self.init_snapshot.free_memory > free_gpu_memory, (
 +        weight_transfer_config = self.vllm_config.weight_transfer_config
@@ -715,7 +1148,7 @@ index 220736b..69e5bdd 100644
 @@ -1308,6 +1445,23 @@ class NPUWorker(WorkerBase):
      def reload_weights(self, *args, **kwargs) -> None:
          self.model_runner.reload_weights(*args, **kwargs)
- 
+
 +    def pull_weights(
 +        self,
 +        local_checkpoint_dir: str,
@@ -735,7 +1168,7 @@ index 220736b..69e5bdd 100644
 +
      def check_health(self) -> None:
          import subprocess
- 
+
 diff --git a/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py b/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py
 index 181c6b2..65b622a 100644
 --- a/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py
@@ -807,11 +1240,15 @@ index 9693200..b4d9a53 100644
          """Start the pull operations described by scheduler metadata."""
          if not metadata.requests:
 diff --git a/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py b/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py
-index 7cf309b..9dfce8d 100644
+index 7cf309b..f9a0b41 100644
 --- a/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py
 +++ b/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py
-@@ -1,43 +1,64 @@
+@@ -1,10 +1,16 @@
  import threading
++import logging
++import os
++
++logger = logging.getLogger(__name__)
 
 
  class GlobalTE:
@@ -823,26 +1260,7 @@ index 7cf309b..9dfce8d 100644
          self.transfer_engine_lock = threading.Lock()
          self.register_buffer_lock = threading.Lock()
 
-     def get_transfer_engine(self, hostname: str, device_name: str | None):
-         if self.transfer_engine is None:
-             with self.transfer_engine_lock:
-                 # Double-Checked Locking
-                 if self.transfer_engine is None:
-                     try:
-                         from mooncake.engine import TransferEngine  # type: ignore
-                     except ImportError as e:
-                         raise ImportError(
-                             "Please install mooncake by following the instructions at "
-                             "https://github.com/kvcache-ai/Mooncake/blob/main/doc/en/build.md "  # noqa: E501
-                             "to run vLLM with MooncakeConnector."
-                         ) from e
-                     self.transfer_engine = TransferEngine()
-                     device_name = device_name if device_name is not None else ""
-                     ret_value = self.transfer_engine.initialize(hostname, "P2PHANDSHAKE", "ascend", device_name)
-                     if ret_value != 0:
-                         raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
-         return self.transfer_engine
-
+@@ -31,13 +37,38 @@ class GlobalTE:
      def register_buffer(self, ptrs: list[int], sizes: list[int]):
          with self.register_buffer_lock:
              assert self.transfer_engine is not None, "Transfer engine must be initialized"
@@ -859,6 +1277,8 @@ index 7cf309b..9dfce8d 100644
 -                    raise RuntimeError("Mooncake memory registration failed.")
 -            self.is_register_buffer = True
 +                    raise RuntimeError(f"Mooncake memory registration failed: ptr={ptr}, size={size}, ret={ret_value}")
++                if os.environ.get("VIME_NPU_MEMORY_DIAGNOSTICS") == "1":
++                    logger.info("Mooncake register: ptr=%s size=%s ret=%s", ptr, size, ret_value)
 +                self._registered_buffers[ptr] = size
 +                self._active_buffers.add(ptr)
 +            self.is_register_buffer = bool(self._active_buffers)
@@ -868,6 +1288,10 @@ index 7cf309b..9dfce8d 100644
 +        with self.register_buffer_lock:
 +            for ptr in list(self._active_buffers):
 +                ret_value = self.transfer_engine.unregister_memory(ptr)
++                if os.environ.get("VIME_NPU_MEMORY_DIAGNOSTICS") == "1":
++                    logger.info(
++                        "Mooncake unregister: ptr=%s size=%s ret=%s", ptr, self._registered_buffers[ptr], ret_value
++                    )
 +                if ret_value != 0:
 +                    raise RuntimeError(f"Mooncake memory deregistration failed: ptr={ptr}, ret={ret_value}")
 +                self._active_buffers.remove(ptr)
@@ -880,3 +1304,352 @@ index 7cf309b..9dfce8d 100644
 
 
  global_te = GlobalTE()
+diff --git a/vllm_ascend/device_allocator/camem.py b/vllm_ascend/device_allocator/camem.py
+index 70bdbc3..4779ac8 100644
+--- a/vllm_ascend/device_allocator/camem.py
++++ b/vllm_ascend/device_allocator/camem.py
+@@ -1,310 +1,335 @@
+ #
+ # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+ # This file is a part of the vllm-ascend project.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+ # you may not use this file except in compliance with the License.
+ # You may obtain a copy of the License at
+ #
+ #     http://www.apache.org/licenses/LICENSE-2.0
+ #
+ # Unless required by applicable law or agreed to in writing, software
+ # distributed under the License is distributed on an "AS IS" BASIS,
+ # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ #
+ # CANN-mem-based pytorch pluggable allocator to implement sleep mode.
+ #
+ import dataclasses
+ import gc
+ import os
+ from collections.abc import Callable
+ from contextlib import contextmanager
+ from typing import Any
+ 
+ import torch
+ from acl.rt import memcpy  # type: ignore # noqa: F401
+ from vllm.logger import logger
+ 
+ 
+ def find_loaded_library(lib_name) -> str | None:
+     """
+     According to according to https://man7.org/linux/man-pages/man5/proc_pid_maps.5.html,
+     the file `/proc/self/maps` contains the memory maps of the process, which includes the
+     shared libraries loaded by the process. We can use this file to find the path of the
+     a loaded library.
+     """  # noqa
+     found_line = None
+     with open("/proc/self/maps") as f:
+         for line in f:
+             if lib_name in line:
+                 found_line = line
+                 break
+     if found_line is None:
+         # the library is not loaded in the current process
+         return None
+     # if lib_name is libcudart, we need to match a line with:
+     # address /path/to/libcudart-hash.so.11.0
+     start = found_line.index("/")
+     path = found_line[start:].strip()
+     filename = path.split("/")[-1]
+-    assert filename.rpartition(".so")[0].startswith(lib_name), f"Unexpected filename: {filename} for library {lib_name}"
++    assert filename.rpartition(".so")[0].startswith(
++        lib_name
++    ), f"Unexpected filename: {filename} for library {lib_name}"
+     return path
+ 
+ 
+ camem_available = False
+ try:
+-    from vllm_ascend.vllm_ascend_C import (  # type: ignore # noqa: F401
+-        init_module,
+-        python_create_and_map,
+-        python_unmap_and_release,
++    # Keep the existing operator extension loaded; only the pluggable
++    # allocator is rebuilt independently from the patched CANN-only source.
++    from vllm_ascend import vllm_ascend_C  # noqa: F401
++
++    try:
++        from vllm_ascend import vime_camem_allocator as native_allocator
++    except ImportError:
++        # A complete backend rebuild can include the same fix in the original
++        # module. Never silently use an old prebuilt allocator implementation.
++        native_allocator = vllm_ascend_C
++    if getattr(native_allocator, "MAPPING_STATE_VERSION", None) != 1:
++        raise ImportError("Build the patched CaMem allocator with docker/npu_patch/build_camem.py")
++    init_module = native_allocator.init_module
++    python_create_and_map = native_allocator.python_create_and_map
++    python_unmap_and_release = native_allocator.python_unmap_and_release
++    lib_name = find_loaded_library(
++        "vime_camem_allocator" if native_allocator is not vllm_ascend_C else "vllm_ascend_C"
+     )
+-
+-    lib_name = find_loaded_library("vllm_ascend_C")
+     camem_available = True
+ except ImportError as e:
+-    logger.warning("Failed to import vllm_ascend_C:%s. Sleep mode will be disabled. ", e)
++    logger.warning("Failed to import patched CaMem allocator:%s. Sleep mode will be disabled. ", e)
+     init_module = None
+     python_create_and_map = None
+     python_unmap_and_release = None
+     lib_name = None
+     libcudart = None
+ 
+ # py_device, py_alignedSize, py_d_mem, py_p_memHandle
+ HandleType = tuple[int, int, int, int]
+ 
+ 
+ @dataclasses.dataclass
+ class AllocationData:
+     handle: HandleType
+     tag: str
+     cpu_backup_tensor: torch.Tensor | None = None
++    mapped: bool = True
+ 
+ 
+ def create_and_map(allocation_handle: HandleType) -> None:
+     python_create_and_map(*allocation_handle)
+ 
+ 
+ def unmap_and_release(allocation_handle: HandleType) -> None:
+     python_unmap_and_release(*allocation_handle)
+ 
+ 
+ def get_pluggable_allocator(
+     python_malloc_fn: Callable[[tuple[int, int, int, int]], None],
+     python_free_func: Callable[[int], tuple[int, int, int, int]],
+ ) -> torch.npu.memory.NPUPluggableAllocator:
+     init_module(python_malloc_fn, python_free_func)
+     new_alloc = torch.npu.memory.NPUPluggableAllocator(lib_name, "my_malloc", "my_free")
+     return new_alloc
+ 
+ 
+ @contextmanager
+ def use_memory_pool_with_allocator(
+     python_malloc_fn: Callable[[tuple[int, int, int, int]], None],
+     python_free_func: Callable[[int], tuple[int, int, int, int]],
+ ):
+     new_alloc = get_pluggable_allocator(python_malloc_fn, python_free_func)
+     mem_pool = torch.npu.memory.MemPool(new_alloc._allocator)
+     with torch.npu.memory.use_mem_pool(mem_pool):
+         yield mem_pool, new_alloc
+ 
+ 
+ class CaMemAllocator:
+     """
+     A singleton class that manages a memory pool for CANN tensors.
+     The memory in this pool can be offloaded or discarded when the
+     allocator sleeps.
+     Inside the `use_memory_pool(tag)` context, all tensors created will
+     be allocated in the memory pool, and has the same tag as the
+     tag passed to the context.
+     When we call `sleep`, all tensors with the specified tag will be
+     offloaded to CPU memory, and the rest of the tensors will be discarded.
+     When we call `wake_up`, all tensors that are previously offloaded
+     will be loaded back to GPU memory, and the rest of the tensors will
+     have empty memory.
+     Why it needs to be a singleton?
+     When allocated tensors are garbage collected, PyTorch will call
+     the free callback, which will call the `python_free_callback` method.
+     The C-extension uses a global variable to store the function of an
+     instance of this class. If we create multiple instances of this class,
+     the global variable will be overwritten and the free callback will
+     not work as expected.
+     """
+ 
+     instance = None
+     default_tag: str = "default"
+     # Allocations with this tag stay mapped across sleep/wake cycles.
+     sleep_persistent_tag: str = "sleep_persistent"
+ 
+     @staticmethod
+     def get_instance() -> "CaMemAllocator":
+         """
+         CaMemAllocator is a singleton class.
+         We cannot call the constructor directly.
+         Call this method to get the instance.
+         """
+         if CaMemAllocator.instance is None:
+             CaMemAllocator.instance = CaMemAllocator()
+         return CaMemAllocator.instance
+ 
+     def __init__(self):
+         conf = os.environ.get("PYTORCH_NPU_ALLOC_CONF", "")
+         assert "expandable_segments:True" not in conf, (
+             "Expandable segments are not compatible with memory pool. "
+             "Please track https://github.com/pytorch/pytorch/issues/147851 "
+             "for the latest updates."
+         )
+ 
+         self.pointer_to_data: dict[int, AllocationData] = {}
+         self.current_tag: str = CaMemAllocator.default_tag
+         self.allocator_and_pools: dict[str, Any] = {}
+ 
+     def python_malloc_callback(self, allocation_handle: HandleType) -> None:
+         """
+         Internal method to store the allocation data
+         when memory is allocated in the memory pool."""
+         py_d_mem = allocation_handle[2]
+         self.pointer_to_data[py_d_mem] = AllocationData(allocation_handle, self.current_tag)
+         return
+ 
+     def python_free_callback(self, ptr: int) -> HandleType:
+         """
+         Internal method to look up the allocation data
+         when memory is freed in the memory pool."""
+         data = self.pointer_to_data.pop(ptr)
++        if os.environ.get("VIME_NPU_MEMORY_DIAGNOSTICS") == "1":
++            logger.info("CaMem free: ptr=%s tag=%s mapped=%s handle=%s", ptr, data.tag, data.mapped, data.handle)
+         if data.cpu_backup_tensor is not None:
+             data.cpu_backup_tensor = None
+         return data.handle
+ 
+     def sleep(self, offload_tags: tuple[str, ...] | str | None = None) -> None:
+         """
+         Put the allocator in sleep mode.
+         All data in the memory allocation with the specified tag will be
+         offloaded to CPU memory, and others will be discarded.
+         :param offload_tags: The tags of the memory allocation that will be
+             offloaded. The rest of the memory allocation will be discarded.
+         """
+         if offload_tags is None:
+             # by default, allocated tensors are offloaded
+             # when the allocator sleeps
+             offload_tags = (CaMemAllocator.default_tag,)
+         elif isinstance(offload_tags, str):
+             offload_tags = (offload_tags,)
+ 
+         assert isinstance(offload_tags, tuple)
+ 
+         offload_count = sum(1 for data in self.pointer_to_data.values() if data.tag in offload_tags)
+         logger.info(
+             "CaMem sleep: offloading %s/%s allocations (tags=%s)",
+             offload_count,
+             len(self.pointer_to_data),
+             offload_tags,
+         )
+         # Workaround for verl v0.8.0: synchronize pending NPU work before
+         # unmapping tensor memory. The exact root cause is unclear, but this
+         # avoids rtMemcpy errors observed when releasing the mappings too early.
+         torch.npu.synchronize()
+ 
+         for ptr, data in self.pointer_to_data.items():
+             if data.tag == CaMemAllocator.sleep_persistent_tag:
+                 # This memory is not offloaded or released during sleep.
+                 continue
++            if not data.mapped:
++                continue
+             handle = data.handle
++            if os.environ.get("VIME_NPU_MEMORY_DIAGNOSTICS") == "1":
++                logger.info("CaMem sleep unmap: ptr=%s tag=%s handle=%s", ptr, data.tag, handle)
+             if data.tag in offload_tags:
+                 size_in_bytes = handle[1]
+                 cpu_backup_tensor = torch.empty(size_in_bytes, dtype=torch.uint8, device="cpu", pin_memory=True)
+                 cpu_ptr = cpu_backup_tensor.data_ptr()
+                 ACL_MEMCPY_DEVICE_TO_HOST = 2
+                 dest_max = cpu_ptr + size_in_bytes * 2
+                 memcpy(cpu_ptr, dest_max, ptr, size_in_bytes, ACL_MEMCPY_DEVICE_TO_HOST)
+                 data.cpu_backup_tensor = cpu_backup_tensor
+             unmap_and_release(handle)
++            data.mapped = False
+ 
+         gc.collect()
+         torch.npu.empty_cache()
+ 
+     def wake_up(self, tags: list[str] | None = None) -> None:
+         """
+         Wake up the allocator from sleep mode.
+         All data that is previously offloaded will be loaded back to GPU
+         memory, and the rest of the data will have empty memory."""
+         restore_count = sum(1 for data in self.pointer_to_data.values() if tags is None or data.tag in tags)
+         logger.info(
+             "CaMem wake_up: restoring %s/%s allocations (tags=%s)",
+             restore_count,
+             len(self.pointer_to_data),
+             tags or "all",
+         )
+         for ptr, data in self.pointer_to_data.items():
+             if data.tag == CaMemAllocator.sleep_persistent_tag:
+                 # It was never released in sleep(), so there is nothing to remap.
+                 continue
+             if tags is None or data.tag in tags:
+                 handle = data.handle
+-                create_and_map(handle)
++                if not data.mapped:
++                    if os.environ.get("VIME_NPU_MEMORY_DIAGNOSTICS") == "1":
++                        logger.info("CaMem wake map: ptr=%s tag=%s handle=%s", ptr, data.tag, handle)
++                    create_and_map(handle)
++                    data.mapped = True
+                 if data.cpu_backup_tensor is not None:
+                     cpu_backup_tensor = data.cpu_backup_tensor
+                     if cpu_backup_tensor is not None:
+                         size_in_bytes = cpu_backup_tensor.numel() * cpu_backup_tensor.element_size()
+                         cpu_ptr = cpu_backup_tensor.data_ptr()
+                         ACL_MEMCPY_HOST_TO_DEVICE = 1
+                         dest_max = ptr + size_in_bytes * 2
+                         memcpy(ptr, dest_max, cpu_ptr, size_in_bytes, ACL_MEMCPY_HOST_TO_DEVICE)
+                         data.cpu_backup_tensor = None
+ 
+     @contextmanager
+     def use_allocation_tag(self, tag: str):
+         """Temporarily override the tag assigned to new allocations."""
+         old_tag = self.current_tag
+         self.current_tag = tag
+         try:
+             yield
+         finally:
+             self.current_tag = old_tag
+ 
+     @contextmanager
+     def use_memory_pool(self, tag: str | None = None):
+         """
+         A context manager to use the memory pool.
+         All memory allocation created inside the context will be allocated
+         in the memory pool, and has the specified tag.
+         :param tag: The tag of the memory allocation. If None, the default tag
+             will be used.
+         """
+         if tag is None:
+             tag = CaMemAllocator.default_tag
+ 
+         assert isinstance(tag, str)
+ 
+         old_tag = self.current_tag
+         self.current_tag = tag
+         with use_memory_pool_with_allocator(self.python_malloc_callback, self.python_free_callback) as data:
+             # start to hit another PyTorch bug in PyTorch 2.6,
+             # possibly because of gc-related issue w.r.t. the allocator and
+             # the memory pool.
+             # to avoid the issue, we keep a reference of the data.
+             # see https://github.com/pytorch/pytorch/issues/146431 .
+             self.allocator_and_pools[tag] = data
+             yield
+             # PyTorch's bug, calling torch.cuda.empty_cache() will error
+             # when using pluggable allocator, see
+             # https://github.com/pytorch/pytorch/issues/145168 .
+             # if we have some memory allocated and then freed,
+             # the memory will not be released.
+             # right now it is fine, because we only use this allocator
+             # during weight loading and kv cache creation, where we only
+             # allocate memory.
+             # TODO: we need to find a way to release the memory,
+             # i.e. calling torch.cuda.empty_cache()
+             self.current_tag = old_tag
+ 
+     def get_current_usage(self) -> int:
+         """
+         Get the total number of bytes allocated in the memory pool.
+         """
+         sum_bytes: int = 0
+         for ptr, data in self.pointer_to_data.items():
+             handle = data.handle
+             sum_bytes += handle[1]
+         return sum_bytes
