@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-from contextlib import nullcontext
 from glob import glob
 from typing import Any
 
@@ -135,12 +134,11 @@ class NpuRayResourceSpec(RayResourceSpec):
 
     def train_runtime_env(self, args: Any, env_vars=None) -> dict[str, str]:
         env = dict(env_vars or {})
-        if not (getattr(args, "offload_train", False) and getattr(args, "train_backend", None) == "megatron"):
+        if not getattr(args, "offload_train", False):
             return env
 
-        env["TMS_HOOK_MODE"] = "torch"
-        if getattr(args, "colocate", False):
-            env["PYTORCH_NPU_ALLOC_CONF"] = "expandable_segments:False"
+        env["TMS_HOOK_MODE"] = "preload"
+        env["PYTORCH_NPU_ALLOC_CONF"] = "expandable_segments:False"
         cann_python_path = _cann_python_site_packages()
         if cann_python_path is not None:
             _prepend_pythonpath(env, cann_python_path)
@@ -238,21 +236,6 @@ class NpuTrainingBootstrap(TrainingBootstrap):
         # does not reinstall Vime's existing override.
         attention = importlib.import_module("vime.backends.megatron_utils.npu_attention_patch")
         attention.DotProductAttention.forward = attention.npu_dot_product_attention_forward
-
-    def training_context(self, offload_train: bool):
-        if not offload_train:
-            return nullcontext()
-        from torch_memory_saver import torch_memory_saver
-
-        return torch_memory_saver.region(tag="training", enable_cpu_backup=True)
-
-    def initialize_optimizer_state(self, optimizer: Any) -> None:
-        """Create lazy optimizer state before leaving the training memory pool."""
-        if optimizer is None:
-            return
-        for opt in getattr(optimizer, "chained_optimizers", [optimizer]):
-            if opt.optimizer is not None and opt.init_state_fn is not None:
-                opt.init_state_fn(opt.optimizer, opt.config)
 
 
 class NpuCheckpointCapabilities(CheckpointCapabilities):
