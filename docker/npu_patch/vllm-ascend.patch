@@ -442,7 +442,7 @@ index 659dd70c8..af1c9df7d 100644
      cls.update_from_output = _wrapped_update_from_output
  
 diff --git a/vllm_ascend/worker/worker.py b/vllm_ascend/worker/worker.py
-index 220736b14..752c329c4 100644
+index 220736b..69e5bdd 100644
 --- a/vllm_ascend/worker/worker.py
 +++ b/vllm_ascend/worker/worker.py
 @@ -22,6 +22,7 @@ import gc
@@ -462,7 +462,7 @@ index 220736b14..752c329c4 100644
          self.sleep_wakeup_manager = SleepWakeupManager(vllm_config, self, lambda: getattr(self, "model_runner", None))
  
          # Weight transfer engine is created in `load_model` once the model
-@@ -243,6 +246,41 @@ class NPUWorker(WorkerBase):
+@@ -243,6 +246,53 @@ class NPUWorker(WorkerBase):
                  except Exception:
                      return
  
@@ -501,10 +501,22 @@ index 220736b14..752c329c4 100644
 +            parameters[name].copy_(value)
 +        self._sleep_saved_parameters.clear()
 +
++    def _prepare_kv_transfer_sleep(self) -> None:
++        if has_kv_transfer_group():
++            prepare_sleep = getattr(get_kv_transfer_group(), "prepare_sleep", None)
++            if prepare_sleep is not None:
++                prepare_sleep()
++
++    def _resume_kv_transfer_after_wake(self, tags: list[str] | None) -> None:
++        if has_kv_transfer_group() and (tags is None or "kv_cache" in tags):
++            resume_after_wake = getattr(get_kv_transfer_group(), "resume_after_wake", None)
++            if resume_after_wake is not None:
++                resume_after_wake()
++
      def sleep(self, level: int = 1) -> None:
          free_bytes_before_sleep = torch.npu.mem_get_info()[0]
          # Level-1 only offloads the weights pool. Persistent metadata such as
-@@ -252,7 +290,12 @@ class NPUWorker(WorkerBase):
+@@ -252,8 +302,14 @@ class NPUWorker(WorkerBase):
              self._sleep_saved_buffers = {}
          else:
              model = self.model_runner.model
@@ -515,9 +527,11 @@ index 220736b14..752c329c4 100644
 +                {name: buffer.cpu().clone() for name, buffer in draft.named_buffers()} if draft is not None else {}
 +            )
  
++        self._prepare_kv_transfer_sleep()
          rl_config = get_ascend_config().rl_config
          cleanup_enabled = rl_config.enabled and rl_config.sleep_mode_extra_cleanup
-@@ -285,13 +328,23 @@ class NPUWorker(WorkerBase):
+         if cleanup_enabled:
+@@ -285,19 +341,31 @@ class NPUWorker(WorkerBase):
          allocator = CaMemAllocator.get_instance()
          allocator.wake_up(tags=tags)
  
@@ -543,7 +557,15 @@ index 220736b14..752c329c4 100644
  
          rl_config = get_ascend_config().rl_config
          cleanup_enabled = rl_config.enabled and rl_config.sleep_mode_extra_cleanup
-@@ -311,6 +364,13 @@ class NPUWorker(WorkerBase):
+         if cleanup_enabled:
+             self.sleep_wakeup_manager.wakeup(tags)
+
++        self._resume_kv_transfer_after_wake(tags)
++
+     def _check_weight_transfer_engine(self) -> None:
+         if self.weight_transfer_engine is None:
+             raise RuntimeError(
+@@ -311,6 +379,13 @@ class NPUWorker(WorkerBase):
          typed_init_info = self.weight_transfer_engine.parse_init_info(init_info)
          self.weight_transfer_engine.init_transfer_engine(typed_init_info)
  
@@ -557,7 +579,7 @@ index 220736b14..752c329c4 100644
      def _check_nz_disabled(self) -> None:
          if get_ascend_config().weight_nz_mode:
              raise ValueError(
-@@ -322,7 +382,48 @@ class NPUWorker(WorkerBase):
+@@ -322,7 +397,48 @@ class NPUWorker(WorkerBase):
  
      def start_weight_update(self) -> None:
          """Begin a new weight update; prepares the model for layerwise reload."""
@@ -606,7 +628,7 @@ index 220736b14..752c329c4 100644
  
          if self._weight_update_active:
              raise RuntimeError(
-@@ -331,11 +432,16 @@ class NPUWorker(WorkerBase):
+@@ -331,11 +447,16 @@ class NPUWorker(WorkerBase):
  
          self._check_nz_disabled()
  
@@ -626,7 +648,7 @@ index 220736b14..752c329c4 100644
          """Receive a chunk of weights from the trainer and load them in place."""
          self._check_weight_transfer_engine()
          assert self.weight_transfer_engine is not None
-@@ -344,11 +450,19 @@ class NPUWorker(WorkerBase):
+@@ -344,11 +465,19 @@ class NPUWorker(WorkerBase):
          if not self._weight_update_active:
              raise RuntimeError("start_weight_update must be called before update_weights.")
  
@@ -651,7 +673,7 @@ index 220736b14..752c329c4 100644
  
      def finish_weight_update(self) -> None:
          """Finish the current weight update; runs layerwise postprocessing."""
-@@ -358,9 +472,13 @@ class NPUWorker(WorkerBase):
+@@ -358,9 +487,13 @@ class NPUWorker(WorkerBase):
              raise RuntimeError("start_weight_update must be called before finish_weight_update.")
  
          assert self.weight_transfer_engine is not None
@@ -668,7 +690,7 @@ index 220736b14..752c329c4 100644
  
      def shutdown(self) -> None:
          if ensure_kv_transfer_shutdown is not None:
-@@ -453,7 +571,9 @@ class NPUWorker(WorkerBase):
+@@ -453,7 +586,9 @@ class NPUWorker(WorkerBase):
          # take current memory snapshot
          self.init_snapshot = MemorySnapshot(device=device)
          self.requested_memory = self.init_snapshot.total_memory * self.cache_config.gpu_memory_utilization
@@ -679,7 +701,7 @@ index 220736b14..752c329c4 100644
              GiB = lambda b: round(b / GiB_bytes, 2)
              raise ValueError(
                  f"Free memory on device "
-@@ -612,7 +732,9 @@ class NPUWorker(WorkerBase):
+@@ -612,7 +747,9 @@ class NPUWorker(WorkerBase):
          self.non_torch_memory = profile_result.non_torch_increase
  
          free_gpu_memory = profile_result.after_profile.free_memory
@@ -690,7 +712,7 @@ index 220736b14..752c329c4 100644
              "Error in memory profiling. "
              f"Initial free memory {GiB(self.init_snapshot.free_memory)} GiB, "
              f"current free memory {GiB(free_gpu_memory)} GiB. "
-@@ -1308,6 +1430,23 @@ class NPUWorker(WorkerBase):
+@@ -1308,6 +1445,23 @@ class NPUWorker(WorkerBase):
      def reload_weights(self, *args, **kwargs) -> None:
          self.model_runner.reload_weights(*args, **kwargs)
  
@@ -714,3 +736,147 @@ index 220736b14..752c329c4 100644
      def check_health(self) -> None:
          import subprocess
  
+diff --git a/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py b/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py
+index 181c6b2..65b622a 100644
+--- a/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py
++++ b/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py
+@@ -338,6 +338,15 @@ class MooncakeBaseConnectorWorker:
+             register_regions.lengths,
+         )
+
++    def prepare_sleep(self) -> None:
++        # EngineCore has paused/drained the scheduler. Finish local device work
++        # before dropping the registrations which pin CaMem's physical pages.
++        torch.npu.synchronize()
++        global_te.unregister_buffer()
++
++    def resume_after_wake(self) -> None:
++        global_te.reregister_buffer()
++
+     def get_finished(self) -> tuple[set[str], set[str]]:
+         """Compatibility wrapper for the legacy completion API."""
+         results = self.get_transfer_results()
+diff --git a/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/connector.py b/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/connector.py
+index 5486bb7..8d256d8 100644
+--- a/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/connector.py
++++ b/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/connector.py
+@@ -171,6 +171,14 @@ class MooncakeBaseConnector(KVConnectorBase_V1, SupportsHMA):
+         assert self.connector_worker is not None
+         self.connector_worker.register_kv_caches(kv_caches)
+
++    def prepare_sleep(self) -> None:
++        assert self.connector_worker is not None
++        self.connector_worker.prepare_sleep()
++
++    def resume_after_wake(self) -> None:
++        assert self.connector_worker is not None
++        self.connector_worker.resume_after_wake()
++
+     def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
+         """Return requests whose receive and send operations have finished."""
+         assert self.connector_worker is not None
+diff --git a/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_worker.py b/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_worker.py
+index 9693200..b4d9a53 100644
+--- a/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_worker.py
++++ b/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_worker.py
+@@ -47,6 +47,7 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake.utils import (
+     group_concurrent_contiguous,
+     zmq_ctx,
+ )
++from vllm_ascend.distributed.kv_transfer.utils.utils import get_transfer_timeout_value
+
+
+ class MooncakePullRecvingThread(threading.Thread):
+@@ -1576,6 +1577,18 @@ class MooncakePullConnectorWorker(MooncakeBaseConnectorWorker):
+             if not self._recving_thread.is_alive():
+                 raise RuntimeError("Mooncake pull receiving thread failed to start")
+
++    def prepare_sleep(self) -> None:
++        if self._recving_thread is not None:
++            # A scheduler pause can abort requests while their remote READ is
++            # still in flight. NPU stream synchronization alone cannot fence it.
++            pending = self._recving_thread.request_queue
++            with pending.all_tasks_done:
++                if not pending.all_tasks_done.wait_for(
++                    lambda: pending.unfinished_tasks == 0, timeout=min(get_transfer_timeout_value(), 300)
++                ):
++                    raise TimeoutError("Mooncake pulls did not drain before sleep")
++        super().prepare_sleep()
++
+     def start_load_kv(self, metadata: MooncakeConnectorMetadata) -> None:
+         """Start the pull operations described by scheduler metadata."""
+         if not metadata.requests:
+diff --git a/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py b/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py
+index 7cf309b..9dfce8d 100644
+--- a/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py
++++ b/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py
+@@ -1,43 +1,64 @@
+ import threading
+
+
+ class GlobalTE:
+     def __init__(self):
+         self.transfer_engine = None
+         self.is_register_buffer: bool = False
++        self._registered_buffers: dict[int, int] = {}
++        self._active_buffers: set[int] = set()
+         self.transfer_engine_lock = threading.Lock()
+         self.register_buffer_lock = threading.Lock()
+
+     def get_transfer_engine(self, hostname: str, device_name: str | None):
+         if self.transfer_engine is None:
+             with self.transfer_engine_lock:
+                 # Double-Checked Locking
+                 if self.transfer_engine is None:
+                     try:
+                         from mooncake.engine import TransferEngine  # type: ignore
+                     except ImportError as e:
+                         raise ImportError(
+                             "Please install mooncake by following the instructions at "
+                             "https://github.com/kvcache-ai/Mooncake/blob/main/doc/en/build.md "  # noqa: E501
+                             "to run vLLM with MooncakeConnector."
+                         ) from e
+                     self.transfer_engine = TransferEngine()
+                     device_name = device_name if device_name is not None else ""
+                     ret_value = self.transfer_engine.initialize(hostname, "P2PHANDSHAKE", "ascend", device_name)
+                     if ret_value != 0:
+                         raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
+         return self.transfer_engine
+
+     def register_buffer(self, ptrs: list[int], sizes: list[int]):
+         with self.register_buffer_lock:
+             assert self.transfer_engine is not None, "Transfer engine must be initialized"
+-            if self.is_register_buffer:
+-                return
+-            for ptr, size in zip(ptrs, sizes):
++            for ptr, size in zip(ptrs, sizes, strict=True):
++                if ptr in self._active_buffers:
++                    if self._registered_buffers[ptr] != size:
++                        raise ValueError("Cannot resize an active Mooncake memory registration")
++                    continue
+                 ret_value = self.transfer_engine.register_memory(ptr, size)
+                 if ret_value != 0:
+-                    raise RuntimeError("Mooncake memory registration failed.")
+-            self.is_register_buffer = True
++                    raise RuntimeError(f"Mooncake memory registration failed: ptr={ptr}, size={size}, ret={ret_value}")
++                self._registered_buffers[ptr] = size
++                self._active_buffers.add(ptr)
++            self.is_register_buffer = bool(self._active_buffers)
++
++    def unregister_buffer(self):
++        """Release device registrations before CaMem unmaps physical pages."""
++        with self.register_buffer_lock:
++            for ptr in list(self._active_buffers):
++                ret_value = self.transfer_engine.unregister_memory(ptr)
++                if ret_value != 0:
++                    raise RuntimeError(f"Mooncake memory deregistration failed: ptr={ptr}, ret={ret_value}")
++                self._active_buffers.remove(ptr)
++            self.is_register_buffer = False
++
++    def reregister_buffer(self):
++        # CaMem restores the same virtual addresses, but the physical pages and
++        # their driver registrations are new. Weight-only wakes must not call us.
++        self.register_buffer(list(self._registered_buffers), list(self._registered_buffers.values()))
+
+
+ global_te = GlobalTE()
