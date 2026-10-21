@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -93,12 +92,6 @@ class TrainingBootstrap:
         return None
 
     def repatch(self, args: Any) -> None:
-        return None
-
-    def training_context(self, offload_train: bool):
-        return nullcontext()
-
-    def initialize_optimizer_state(self, optimizer: Any) -> None:
         return None
 
 

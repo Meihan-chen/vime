@@ -235,6 +235,11 @@ It requires g++, Python headers and CANN headers/libraries (installed by the
 current Dockerfile). Source/compiler/SDK fingerprints skip unchanged builds;
 reusing an image still builds a changed allocator before running tests.
 
+`torch-memory-saver.patch` is applied only while building the TMS wheel in
+`Dockerfile.npu`. It is not a runtime Git-source patch and must not be added to
+`series.conf`: the TMS source tree is removed after installation. Changes to
+this patch require `image-build` so Python and the allocator libraries match.
+
 The initial rollout of this mechanism requires publishing a new default image
 that contains `/opt/npu_patch/series.conf`, then updating
 `DEFAULT_CI_IMAGE` in `npu_suites.py`. The legacy default image contains patch

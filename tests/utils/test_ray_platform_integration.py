@@ -199,7 +199,11 @@ def test_train_group_preserves_main_offload_env(monkeypatch, tmp_path, backend, 
     monkeypatch.setitem(sys.modules, "torch_memory_saver", tms)
     if library is not None:
         (tmp_path / library).touch()
-    monkeypatch.setattr(actor_group_module, "current_platform", lambda: _fake_platform(None))
+    monkeypatch.setattr(
+        actor_group_module,
+        "current_platform",
+        lambda: _fake_platform(SimpleNamespace(train_runtime_env=lambda _args, env: env)),
+    )
     remote = Mock(return_value=lambda actor: actor)
     monkeypatch.setattr(actor_group_module.ray, "remote", remote)
     args = SimpleNamespace(
