@@ -59,8 +59,12 @@ class UpdateWeightFromDistributed:
         engine_parallel_configs: Sequence[Mapping[str, object]] | None = None,
     ) -> None:
         del rollout_engine_lock, engine_gpu_offsets, engine_parallel_configs
-        self.rollout_engines = list(rollout_engines)
+        # Tear down the previous group before adopting the new engines:
+        # disconnect_rollout_engines() reads self.rollout_engines, so
+        # assigning first left the old engines connected and sent the
+        # teardown to engines that were never connected.
         self.disconnect_rollout_engines()
+        self.rollout_engines = list(rollout_engines)
         engine_gpu_counts = list(
             engine_gpu_counts or [self.args.rollout_num_gpus_per_engine] * len(self.rollout_engines)
         )
