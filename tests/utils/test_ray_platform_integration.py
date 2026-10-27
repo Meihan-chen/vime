@@ -109,8 +109,14 @@ def test_ray_noset_visible_devices_keeps_ascend_entry():
     assert "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES" in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 
 
-def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
+def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch, tmp_path):
     from vime.ray import actor_group as actor_group_module
+
+    tms = types.ModuleType("torch_memory_saver")
+    tms.__file__ = str(tmp_path / "torch_memory_saver" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "torch_memory_saver", tms)
+    preload_library = tmp_path / "torch_memory_saver_hook_mode_preload.abi3.so"
+    preload_library.touch()
 
     runtime_env_inputs = []
     ray_ops = SimpleNamespace(
@@ -173,6 +179,9 @@ def test_train_group_uses_npu_runtime_env_and_actor_resources(monkeypatch):
     assert received_args.offload_train == args.offload_train
     assert received_args.colocate == args.colocate
     assert runtime_env_inputs[0][1]["USER_ENV"] == "yes"
+    assert runtime_env_inputs[0][1]["LD_PRELOAD"] == str(preload_library)
+    assert runtime_env_inputs[0][1]["TMS_INIT_ENABLE"] == "1"
+    assert runtime_env_inputs[0][1]["TMS_INIT_ENABLE_CPU_BACKUP"] == "1"
     assert remote_declarations[0]["runtime_env"]["env_vars"]["PLATFORM_ENV"] == "1"
     assert remote_declarations[0]["num_gpus"] == 1
     assert actor_allocations[0]["resources"] == {"ACCEL": 0.4}
