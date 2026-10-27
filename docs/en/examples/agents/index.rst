@@ -9,3 +9,5 @@ Agents & environments
    ../../_examples_synced/multi_agent/README.md
    ../../_examples_synced/coding_agent_rl/README.md
    ../../_examples_synced/tau-bench/README.md
+   ../../_examples_synced/retool/README.md
+   ../../_examples_synced/search-r1/README.md
