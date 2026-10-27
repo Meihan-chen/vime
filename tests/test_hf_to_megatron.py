@@ -35,7 +35,6 @@ from vime.backends.megatron_utils.hf_to_megatron.qwen3_next import qwen3_next_hf
 from vime.backends.megatron_utils.hf_to_megatron.qwen3_omni import qwen3_omni_hf_tensor
 from vime.backends.megatron_utils.hf_to_megatron.qwen3_vl import qwen3_vl_hf_tensor
 from vime.backends.megatron_utils.megatron_to_hf import _convert_to_hf_core, convert_to_hf
-from vime.backends.megatron_utils.megatron_to_hf.qwen3_vl import convert_qwen3vl_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.deepseekv3 import convert_deepseekv3_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.glm4 import convert_glm4_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.glm4moe import convert_glm4moe_to_hf
@@ -44,6 +43,7 @@ from vime.backends.megatron_utils.megatron_to_hf.minimax_m2 import convert_minim
 from vime.backends.megatron_utils.megatron_to_hf.qwen2 import convert_qwen2_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.qwen3_next import convert_qwen3_next_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.qwen3_omni import convert_qwen3_omni_to_hf
+from vime.backends.megatron_utils.megatron_to_hf.qwen3_vl import convert_qwen3vl_to_hf
 from vime.backends.megatron_utils.megatron_to_hf.qwen3moe import convert_qwen3moe_to_hf
 
 NUM_GPUS = 0
