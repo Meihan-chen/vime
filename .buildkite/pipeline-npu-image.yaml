@@ -74,17 +74,42 @@ steps:
       sed -i '/^# syntax=docker\/dockerfile:1\.7$$/d' docker/Dockerfile.npu
 
       export DOCKER_CONFIG=/home/user/.docker
-      buildctl \
-        --addr="$${BUILDKITD_ADDR}" \
-        --tlscacert=/home/user/.docker/ca.pem \
-        --tlscert=/home/user/.docker/cert.pem \
-        --tlskey=/home/user/.docker/key.pem \
+      BUILDKIT_ARGS=(
+        --addr="$${BUILDKITD_ADDR}"
+        --tlscacert=/home/user/.docker/ca.pem
+        --tlscert=/home/user/.docker/cert.pem
+        --tlskey=/home/user/.docker/key.pem
+      )
+      BASE_IMAGE_TAG="$$(sed -n 's/^ARG BASE_IMAGE_TAG=//p' docker/Dockerfile.npu)"
+      test -n "$${BASE_IMAGE_TAG}"
+      BASE_IMAGE_ARGS=()
+      BASE_IMAGE_PROBE_DIR="$$(mktemp -d)"
+      trap 'rm -rf "$${BASE_IMAGE_PROBE_DIR}"' EXIT
+      printf 'FROM %s:%s\n' "$${BASE_IMAGE}" "$${BASE_IMAGE_TAG}" > "$${BASE_IMAGE_PROBE_DIR}/Dockerfile"
+
+      # Resolve the exact ARM64 tag before overriding the Dockerfile default.
+      if timeout 60 buildctl "$${BUILDKIT_ARGS[@]}" build \
+        --frontend dockerfile.v0 \
+        --local context="$${BASE_IMAGE_PROBE_DIR}" \
+        --local dockerfile="$${BASE_IMAGE_PROBE_DIR}" \
+        --opt platform=linux/arm64 \
+        --opt image-resolve-mode=pull \
+        --opt build-arg:BUILDKIT_DOCKERFILE_CHECK=error=true \
+        --progress=plain; then
+        BASE_IMAGE_ARGS=(--opt "build-arg:BASE_IMAGE=$${BASE_IMAGE}")
+        echo "Using internal base image: $${BASE_IMAGE}:$${BASE_IMAGE_TAG}"
+      else
+        echo "Internal base image unavailable; using the Dockerfile default for $${BASE_IMAGE_TAG}"
+      fi
+
+      buildctl "$${BUILDKIT_ARGS[@]}" \
         build \
         --frontend dockerfile.v0 \
         --local context=. \
         --local dockerfile=./docker \
         --opt filename=Dockerfile.npu \
-        --opt build-arg:BASE_IMAGE="$${BASE_IMAGE}" \
+        --opt platform=linux/arm64 \
+        "$${BASE_IMAGE_ARGS[@]}" \
         --opt build-arg:VIME_COMMIT="$${VIME_IMAGE_TAG}" \
         --opt build-arg:RUST_IMAGE="$${RUST_IMAGE}" \
         --opt build-arg:CARGO_REGISTRY="$${CARGO_REGISTRY}" \
