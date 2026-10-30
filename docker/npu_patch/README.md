@@ -12,10 +12,10 @@ This guide provides instructions for installing Vime with NPU support, including
 | vLLM Router | `1fbcde7443d75b36befb61bc081f64c2a1f13a4b` + `docker/patch/latest/router-health-check.patch` | [GitHub](https://github.com/vllm-project/router) |
 | Sunabako | `0.1.1` + `docker/patch/latest/sunabako-arm64.patch` | [PyPI](https://pypi.org/project/sunabako/0.1.1/) |
 | FLA (serving, included in base image) | `flash-linear-attention-npu-a3==26.9.1+dev5cc6990` | [v26.9.1-20261020-020004](https://github.com/flashserve/flash-linear-attention-npu/releases/tag/v26.9.1-20261020-020004) |
-| Megatron-LM | `1dcf0dafa884ad52ffb243625717a3471643e087` | [GitHub](https://github.com/NVIDIA/Megatron-LM) |
-| MegatronAdaptor | `15582addff3f3d4680e350826fa70d012b475509` | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor) |
-| TransformerEngineNPU | `d743c83d060d5edc48867ecb9e93ec80d81860e4` | [GitCode](https://gitcode.com/Ascend/TransformerEngineNPU) |
-| MindSpeed | `fc63de5c48426dd019c3b3f39e65f5bdf56e4086` | [GitCode](https://gitcode.com/Ascend/MindSpeed) |
+| Megatron-LM | `4b4acac9a1d28ea6829c8d4f566d75698a21249d` | [GitHub](https://github.com/NVIDIA/Megatron-LM) |
+| MegatronAdaptor | `c7e52b2c8482105e6ec7fcd8cdef364e7c7b22c5` | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor) |
+| TransformerEngineNPU | `d405be23773968bf7fdc567854005054550830fc` | [GitCode](https://gitcode.com/Ascend/TransformerEngineNPU) |
+| MindSpeed | `43e884e651b6460b0a49a1eac5991d63eb4996a7` | [GitCode](https://gitcode.com/Ascend/MindSpeed) |
 | torch_memory_saver (NPU) | `sgl-kernel-npu` tag `2026.6.0` + `torch-memory-saver.patch` | [GitHub](https://github.com/sgl-project/sgl-kernel-npu) |
 
 ## Preparing the Running Environment
@@ -63,12 +63,11 @@ git -C /vllm-workspace/vllm-ascend apply "${PATCH_DIR}/vllm-ascend.patch"
 
 ### 2. Megatron-LM
 
-Apply the single NPU patch directly to the pinned commit. Do not apply the public
-`docker/patch/latest/megatron.patch` first.
+Apply `megatron.patch`, copied from the shared `docker/patch/latest/megatron.patch`, to the pinned commit.
 
 ```bash
 git clone https://github.com/NVIDIA/Megatron-LM.git "${VIME_INSTALL_ROOT}/Megatron-LM"
-git -C "${VIME_INSTALL_ROOT}/Megatron-LM" checkout 1dcf0dafa884ad52ffb243625717a3471643e087
+git -C "${VIME_INSTALL_ROOT}/Megatron-LM" checkout 4b4acac9a1d28ea6829c8d4f566d75698a21249d
 
 git -C "${VIME_INSTALL_ROOT}/Megatron-LM" apply --check "${PATCH_DIR}/megatron.patch"
 git -C "${VIME_INSTALL_ROOT}/Megatron-LM" apply "${PATCH_DIR}/megatron.patch"
@@ -84,11 +83,11 @@ Use TransformerEngineNPU, not the CUDA TransformerEngine package.
 pip install --no-build-isolation "nvidia-modelopt==0.46.0" "nvdlfw-inspect==0.2.2"
 
 git clone https://gitcode.com/Ascend/TransformerEngineNPU.git "${VIME_INSTALL_ROOT}/TransformerEngineNPU"
-git -C "${VIME_INSTALL_ROOT}/TransformerEngineNPU" checkout d743c83d060d5edc48867ecb9e93ec80d81860e4
+git -C "${VIME_INSTALL_ROOT}/TransformerEngineNPU" checkout d405be23773968bf7fdc567854005054550830fc
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/TransformerEngineNPU"
 
 git clone https://gitcode.com/Ascend/MegatronAdaptor.git "${VIME_INSTALL_ROOT}/MegatronAdaptor"
-git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" checkout 15582addff3f3d4680e350826fa70d012b475509
+git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" checkout c7e52b2c8482105e6ec7fcd8cdef364e7c7b22c5
 git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" apply --check "${PATCH_DIR}/megatron-adaptor.patch"
 git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" apply "${PATCH_DIR}/megatron-adaptor.patch"
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MegatronAdaptor"
@@ -98,7 +97,7 @@ pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MegatronAdap
 
 ```bash
 git clone https://gitcode.com/Ascend/MindSpeed.git "${VIME_INSTALL_ROOT}/MindSpeed"
-git -C "${VIME_INSTALL_ROOT}/MindSpeed" checkout fc63de5c48426dd019c3b3f39e65f5bdf56e4086
+git -C "${VIME_INSTALL_ROOT}/MindSpeed" checkout 43e884e651b6460b0a49a1eac5991d63eb4996a7
 git -C "${VIME_INSTALL_ROOT}/MindSpeed" apply --check "${PATCH_DIR}/mindspeed.patch"
 git -C "${VIME_INSTALL_ROOT}/MindSpeed" apply "${PATCH_DIR}/mindspeed.patch"
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MindSpeed"
