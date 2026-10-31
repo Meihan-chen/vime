@@ -1,3 +1,70 @@
+diff --git a/mindspeed/core/fusions/fused_rope.py b/mindspeed/core/fusions/fused_rope.py
+index 8b403a0d..06358a82 100644
+--- a/mindspeed/core/fusions/fused_rope.py
++++ b/mindspeed/core/fusions/fused_rope.py
+@@ -1,6 +1,8 @@
+ # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2025, Huawei Technologies Co., Ltd.  All rights reserved.
++import warnings
+ from functools import wraps
++from typing import Optional
+
+ import torch
+ from torch import Tensor
+@@ -55,8 +57,9 @@ def apply_rotary_pos_emb_bshd(
+     t: Tensor,
+     freqs: Tensor,
+     rotary_interleaved: bool = False,
+-    multi_latent_attention: bool = False,
++    mla_rotary_interleaved: bool = False,
+     mscale: float = 1.0,
++    multi_latent_attention: Optional[bool] = None,
+ ) -> Tensor:
+     """Apply rotary positional embedding to input tensor T.
+
+@@ -65,14 +68,21 @@ def apply_rotary_pos_emb_bshd(
+         freqs (Tensor): Rotary Positional embedding tensor freq is of shape [seq_length, ..., dim]
+         rotary_interleaved (bool, optional): A flag indicating whether to interleave the
+             application of sine and cosine components. Defaults to False.
+-        multi_latent_attention (bool, optional): A flag indicating if multi-latent attention
+-            mechanism should be applied. If True, it splits the tensor into multiple latent
+-            spaces before applying RoPE. Defaults to False.
++        mla_rotary_interleaved (bool, optional): Whether to apply MLA-style interleaving
++            to the rotary dimensions. Defaults to False.
+         mscale (float, optional): A scaling factor applied to both the sine and cosine
+             components of the positional embeddings. Defaults to 1.0.
++        multi_latent_attention (bool, optional): Deprecated alias for mla_rotary_interleaved.
+     Returns:
+         Tensor: The input tensor after applying RoPE
+     """
++    if multi_latent_attention is not None:
++        warnings.warn(
++            "multi_latent_attention is deprecated. Please use mla_rotary_interleaved instead.",
++            DeprecationWarning,
++        )
++        mla_rotary_interleaved = multi_latent_attention
++
+     args = get_full_args()
+     _mscale = mscale
+     if hasattr(args, "rope_scaling_type") and args.rope_scaling_type == "yarn":
+@@ -81,13 +91,14 @@ def apply_rotary_pos_emb_bshd(
+             / yarn_get_mscale(args.yarn_scaling_factor, args.rope_scaling_mscale_all_dim)
+         )
+
+-    if multi_latent_attention:
++    rot_dim = freqs.shape[-1]
++    t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
++
++    if mla_rotary_interleaved:
+         x1 = t[..., 0::2]
+         x2 = t[..., 1::2]
+         t = torch.cat((x1, x2), dim=-1)
+
+-    rot_dim = freqs.shape[-1]
+-    t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
+     cos_ = (torch.cos(freqs) * _mscale).to(t.dtype)
+     sin_ = (torch.sin(freqs) * _mscale).to(t.dtype)
+
 diff --git a/mindspeed/core/optimizer/fix_duplicate_allgather.py b/mindspeed/core/optimizer/fix_duplicate_allgather.py
 index fc69e8b7..d29f2206 100644
 --- a/mindspeed/core/optimizer/fix_duplicate_allgather.py
