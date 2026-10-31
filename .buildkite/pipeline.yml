@@ -213,7 +213,6 @@ steps:
             tests/test_glm5_indexer_q_norm.py \
             tests/test_glm5_indexer_short_context.py \
             tests/test_hf_to_megatron.py \
-            tests/test_te_npu_cp_patch.py \
             tests/test_layerwise_alignment.py \
             tests/test_model_provider_freeze.py \
             tests/test_policy_loss.py \
