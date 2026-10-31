@@ -15,7 +15,6 @@ This guide provides instructions for installing Vime with NPU support, including
 | Megatron-LM | `4b4acac9a1d28ea6829c8d4f566d75698a21249d` | [GitHub](https://github.com/NVIDIA/Megatron-LM) |
 | MegatronAdaptor | `c7e52b2c8482105e6ec7fcd8cdef364e7c7b22c5` | [GitCode](https://gitcode.com/Ascend/MegatronAdaptor) |
 | TransformerEngineNPU | `d405be23773968bf7fdc567854005054550830fc` | [GitCode](https://gitcode.com/Ascend/TransformerEngineNPU) |
-| MindSpeed | `43e884e651b6460b0a49a1eac5991d63eb4996a7` | [GitCode](https://gitcode.com/Ascend/MindSpeed) |
 | torch_memory_saver (NPU) | `sgl-kernel-npu` tag `2026.6.0` + `torch-memory-saver.patch` | [GitHub](https://github.com/sgl-project/sgl-kernel-npu) |
 
 ## Preparing the Running Environment
@@ -23,6 +22,11 @@ This guide provides instructions for installing Vime with NPU support, including
 Run the following steps inside the base image listed above, with the Ascend devices and host driver mounted. The base image provides Python, CANN, PyTorch, torch-npu, vLLM, vLLM-Ascend and serving FLA.
 
 Use a checkout of this Vime revision at `/root/vime`. Start with unpatched dependency source trees; do not repeat these steps in an already-patched Vime image.
+
+This configuration uses MegatronAdaptor and TransformerEngineNPU without MindSpeed.
+Use an environment where `mindspeed` is not importable: MegatronAdaptor automatically
+activates it when installed. Rebuild older Vime images; updating source patches alone
+does not remove installed packages.
 
 ```bash
 export VIME_INSTALL_ROOT=/root
@@ -93,17 +97,11 @@ git -C "${VIME_INSTALL_ROOT}/MegatronAdaptor" apply "${PATCH_DIR}/megatron-adapt
 pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MegatronAdaptor"
 ```
 
-### 4. MindSpeed
+The optional fused Ring Attention update for TND layout or explicit sequence lengths
+requires a MindSpeed extension in this TransformerEngineNPU revision. Leave that
+fusion disabled in this configuration; the non-fused update remains available.
 
-```bash
-git clone https://gitcode.com/Ascend/MindSpeed.git "${VIME_INSTALL_ROOT}/MindSpeed"
-git -C "${VIME_INSTALL_ROOT}/MindSpeed" checkout 43e884e651b6460b0a49a1eac5991d63eb4996a7
-git -C "${VIME_INSTALL_ROOT}/MindSpeed" apply --check "${PATCH_DIR}/mindspeed.patch"
-git -C "${VIME_INSTALL_ROOT}/MindSpeed" apply "${PATCH_DIR}/mindspeed.patch"
-pip install --no-deps --no-build-isolation -e "${VIME_INSTALL_ROOT}/MindSpeed"
-```
-
-### 5. Vime
+### 4. Vime
 
 Build and install the Sunabako arm64 wheel before installing Vime requirements.
 Use Rust 1.95, a C build toolchain, `curl`, `git`, and `python3-venv`. The Dockerfile
@@ -136,7 +134,7 @@ Training FLA 0.5.2 does not replace the serving FLA package required by vLLM-Asc
 keep the latter as provided by the base image. Do not install the training package's
 `npu` extra, which pins a different torch / torch-npu pair.
 
-### 6. torch_memory_saver
+### 5. torch_memory_saver
 
 Apply the NPU patch, then build and reinstall the wheel:
 
@@ -150,7 +148,7 @@ python3 -m pip install --no-deps --force-reinstall dist/torch_memory_saver-*.whl
 cd "${VIME_INSTALL_ROOT}/vime"
 ```
 
-### 7. vLLM Router
+### 6. vLLM Router
 
 Build the pinned router with the shared health-check patch so Vime can own worker
 health checks. This patch changes Rust as well as Python; applying only the Python
@@ -182,7 +180,7 @@ Set the source paths before running Vime:
 export PYTHONPATH="${VIME_INSTALL_ROOT}/Megatron-LM:${VIME_INSTALL_ROOT}/MegatronAdaptor:${VIME_INSTALL_ROOT}/TransformerEngineNPU:${VIME_INSTALL_ROOT}/vime${PYTHONPATH:+:${PYTHONPATH}}"
 
 python3 -c 'import numpy, pyarrow, datasets, fastapi, starlette; from ray._private.serialization import SerializationContext; from ray._private.worker import global_worker; SerializationContext(global_worker); print(f"Data/Ray check passed: numpy={numpy.__version__}, pyarrow={pyarrow.__version__}, datasets={datasets.__version__}, fastapi={fastapi.__version__}, starlette={starlette.__version__}")'
-python3 -c 'import megatron, mindspeed, megatron_adaptor, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend'
+python3 -c 'import importlib.util; assert importlib.util.find_spec("mindspeed") is None, "MindSpeed must be absent to avoid automatic MegatronAdaptor patches"; import megatron_adaptor, megatron, transformer_engine, torch_memory_saver, vime, vllm, vllm_ascend'
 ```
 
 For a complete container build recipe, see [Dockerfile.npu](../Dockerfile.npu).
