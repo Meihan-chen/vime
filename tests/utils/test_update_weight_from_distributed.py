@@ -108,13 +108,24 @@ def test_ray_client_fans_out_and_offsets_nccl_ranks(update_module):
     engines = [RecordingEngine(), RecordingEngine()]
     client = update_module.VimeRayWeightSyncClient(engines, lambda: 7, [2, 4])
 
-    client.init_weight_transfer_engine({"rank_offset": 1, "world_size": 7})
+    init_info = {
+        "rank_offset": 1,
+        "world_size": 7,
+        "packed": True,
+        "packed_buffer_size_bytes": 65536,
+        "packed_num_buffers": 1,
+    }
+    client.init_weight_transfer_engine(init_info)
     client.start_weight_update()
     client.update_weights({"names": ["weight"]})
     client.finish_weight_update()
 
-    assert engines[0].init_weight_transfer_engine.calls[0].args[0]["init_info"]["rank_offset"] == 1
-    assert engines[1].init_weight_transfer_engine.calls[0].args[0]["init_info"]["rank_offset"] == 3
+    for engine, rank_offset in zip(engines, [1, 3], strict=True):
+        assert engine.init_weight_transfer_engine.calls[0].args[0]["init_info"] == {
+            **init_info,
+            "rank_offset": rank_offset,
+        }
+    assert init_info["rank_offset"] == 1
     assert len(engines[0].start_weight_update.calls) == 1
     assert len(engines[1].update_weights.calls) == 1
     assert engines[0].finish_weight_update.calls[0].kwargs == {"weight_version": "7"}
@@ -133,7 +144,33 @@ def test_ray_client_selects_draft_lifecycle(update_module):
 
 
 @pytest.mark.unit
-def test_weight_source_caches_metadata_and_reiterates(update_module, monkeypatch):
+@pytest.mark.parametrize("draft", [False, True])
+@pytest.mark.parametrize("payload", [{"names": ["weight"]}, [{"names": ["weight"]}, {"names": []}]])
+def test_ray_client_preserves_bucket_session(update_module, draft, payload):
+    engines = [RecordingEngine() for _ in range(3)]
+    client = update_module.VimeRayWeightSyncClient(engines, lambda: 7)
+    client.draft = draft
+
+    client.start_weight_update()
+    for _ in range(2):
+        client.update_weights(payload)
+    for engine in engines:
+        assert engine.finish_weight_update.calls == []
+    client.finish_weight_update()
+
+    for engine in engines:
+        selected = engine.start_draft_weight_update if draft else engine.start_weight_update
+        unselected = engine.start_weight_update if draft else engine.start_draft_weight_update
+        assert selected.calls == [RemoteCall((), {})]
+        assert unselected.calls == []
+        assert engine.update_weights.calls == [RemoteCall((payload,), {})] * 2
+        assert engine.finish_weight_update.calls == [RemoteCall((), {"weight_version": "7"})]
+        assert engine.post_process_weights.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("empty", [False, True])
+def test_weight_source_caches_metadata_and_reiterates(update_module, monkeypatch, empty):
     class ParamMeta:
         def __init__(self, name, dtype, shape):
             self.name = name
@@ -145,17 +182,23 @@ def test_weight_source_caches_metadata_and_reiterates(update_module, monkeypatch
     monkeypatch.setitem(sys.modules, "vllm.distributed.weight_transfer.base", base_module)
 
     calls = []
+    tensors = [] if empty else [("a", torch.zeros(2, dtype=torch.float16)), ("b", torch.ones(3, dtype=torch.float32))]
 
     class Iterator:
         def get_hf_weight_chunks(self, weights):
             calls.append(weights)
-            yield [("a", torch.zeros(2)), ("b", torch.ones(3))]
+            yield tensors
 
     source = update_module.HfWeightSource(Iterator(), lambda: {"version": len(calls)})
 
-    assert [item.name for item in source.metadata()] == ["a", "b"]
-    assert [item.name for item in source.metadata()] == ["a", "b"]
-    assert [name for name, _ in source] == ["a", "b"]
+    metadata = source.metadata()
+    assert [(item.name, item.dtype, item.shape) for item in metadata] == [
+        (name, tensor.dtype, tuple(tensor.shape)) for name, tensor in tensors
+    ]
+    assert source.metadata() is metadata
+    replayed = list(source)
+    assert [name for name, _ in replayed] == [name for name, _ in tensors]
+    assert all(actual is expected for (_, actual), (_, expected) in zip(replayed, tensors, strict=True))
     assert len(calls) == 2
 
 
@@ -328,6 +371,83 @@ def test_failed_transfer_does_not_resume_generation(update_module, monkeypatch):
         updater.update_weights()
 
     assert updater.rollout_engines[0].continue_generation.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("layer_prefix", "hf_layer"),
+    [
+        ("mtp.layers.0.transformer_layer", 47),
+        ("mtp.layers.0.mtp_model_layer", 47),
+        ("decoder.layers.46", 46),
+    ],
+)
+@pytest.mark.parametrize(("ep_size", "ep_rank"), [(1, 0), (8, 0), (8, 1), (8, 7)])
+def test_expert_parallel_hf_load_and_export(
+    update_module, monkeypatch, tmp_path, layer_prefix, hf_layer, ep_size, ep_rank
+):
+    from safetensors.torch import save_file
+
+    from vime.backends.megatron_utils.hf_to_megatron.common import load_model_hf_weights
+    from vime.backends.megatron_utils.hf_to_megatron.deepseek import deepseek_hf_tensor
+    from vime.backends.megatron_utils.megatron_to_hf import convert_to_hf
+
+    common = importlib.import_module(COMMON_MODULE)
+    monkeypatch.setattr(
+        common,
+        "mpu",
+        types.SimpleNamespace(
+            get_expert_model_parallel_world_size=lambda: ep_size,
+            get_expert_model_parallel_rank=lambda: ep_rank,
+        ),
+    )
+    monkeypatch.setattr(common, "get_transformer_layer_offset", lambda config: 0)
+    args = types.SimpleNamespace(
+        num_experts=64, num_layers=47, kv_channels=2, num_attention_heads=1, num_query_groups=1, vocab_size=2
+    )
+    config = types.SimpleNamespace(model_type="glm4_moe_lite", num_hidden_layers=47, tie_word_embeddings=False)
+    hf_weights = {
+        f"model.layers.{hf_layer}.mlp.experts.{expert}.{projection}_proj.weight": torch.full(
+            (2, 2), float(3 * expert + offset)
+        )
+        for expert in range(args.num_experts)
+        for offset, projection in enumerate(("gate", "up", "down"), start=1)
+    }
+    save_file(hf_weights, str(tmp_path / "model.safetensors"))
+    local_count = args.num_experts // ep_size
+    parameters = {
+        f"module.module.{layer_prefix}.mlp.experts.{linear}.weight{expert}": torch.nn.Parameter(torch.zeros(shape))
+        for expert in range(local_count)
+        for linear, shape in (("linear_fc1", (4, 2)), ("linear_fc2", (2, 2)))
+    }
+    model = types.SimpleNamespace(
+        config=config, named_parameters=lambda: iter(parameters.items()), named_buffers=lambda: iter(())
+    )
+
+    load_model_hf_weights(args, [model], tmp_path, config, deepseek_hf_tensor)
+
+    exported = {}
+    for local_expert in range(local_count):
+        hf_prefix = f"model.layers.{hf_layer}.mlp.experts.{ep_rank * local_count + local_expert}"
+        local_prefix = f"module.module.{layer_prefix}.mlp.experts"
+        expected_fc1 = torch.cat(
+            [hf_weights[f"{hf_prefix}.{projection}_proj.weight"] for projection in ("gate", "up")]
+        )
+        assert torch.equal(parameters[f"{local_prefix}.linear_fc1.weight{local_expert}"], expected_fc1)
+        assert torch.equal(
+            parameters[f"{local_prefix}.linear_fc2.weight{local_expert}"], hf_weights[f"{hf_prefix}.down_proj.weight"]
+        )
+    for name, parameter in common.named_params_and_buffers(args, [model]):
+        assert name.startswith(f"module.module.{layer_prefix}.")
+        exported.update(convert_to_hf(args, "glm4_moe_lite", name, parameter))
+    expected = {
+        f"model.layers.{hf_layer}.mlp.experts.{expert}.{projection}_proj.weight"
+        for expert in range(ep_rank * local_count, (ep_rank + 1) * local_count)
+        for projection in ("gate", "up", "down")
+    }
+    assert exported.keys() == expected
+    for name, parameter in exported.items():
+        assert torch.equal(parameter, hf_weights[name])
 
 
 @pytest.fixture

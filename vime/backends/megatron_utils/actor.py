@@ -10,8 +10,9 @@ import torch
 import torch.distributed as dist
 from megatron.core import mpu
 from torch_memory_saver import torch_memory_saver
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoTokenizer
 
+from vime.backends import megatron_lifecycle
 from vime.data.tensor import TensorRef
 from vime.observability import train_data_utils, train_metric_utils
 from vime.observability.logging_utils import init_tracking
@@ -23,6 +24,7 @@ from vime.utils.data import process_rollout_data
 from vime.utils.distributed_utils import get_gloo_group
 from vime.utils.memory_utils import clear_memory, print_memory, reset_cuda_stack_size
 from vime.utils.misc import Box
+from vime.utils.model_config import load_hf_config
 from vime.utils.reloadable_process_group import (
     destroy_process_groups,
     monkey_patch_torch_dist,
@@ -81,6 +83,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(args)
 
+        megatron_lifecycle.current().after_args(args)
         if is_megatron_main_rank():
             init_tracking(args, primary=False, role=role)
 
@@ -89,7 +92,7 @@ class MegatronTrainRayActor(TrainRayActor):
         # read config and tokenizer serialized to prevent concurrent writing bug.
         for i in range(args.num_gpus_per_node):
             if i == dist.get_rank() % args.num_gpus_per_node:
-                self.hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+                self.hf_config = load_hf_config(args.hf_checkpoint, trust_remote_code=True)
                 self.tokenizer = AutoTokenizer.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
